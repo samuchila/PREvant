@@ -34,8 +34,10 @@ use base64::encode;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::DeploymentSpec;
 use k8s_openapi::api::core::v1::{
-    Container, ContainerPort, EnvVar, KeyToPath, LocalObjectReference, PodSpec, PodTemplateSpec,
-    ResourceRequirements, SecretVolumeSource, Volume, VolumeMount,
+    Container, ContainerPort, EnvVar, KeyToPath, LocalObjectReference, PersistentVolume as PV,
+    PersistentVolumeClaim as PVC, PersistentVolumeClaimSpec as PVCSpec,
+    PersistentVolumeClaimVolumeSource as PVCSource, PersistentVolumeSpec as PVSpec, PodSpec,
+    PodTemplateSpec, ResourceRequirements, SecretVolumeSource, Volume, VolumeMount,
 };
 use k8s_openapi::api::{
     apps::v1::Deployment as V1Deployment, core::v1::Namespace as V1Namespace,
@@ -52,6 +54,7 @@ use secstr::SecUtf8;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
+use std::iter::FromIterator;
 use std::path::{Component, PathBuf};
 use std::string::ToString;
 
@@ -238,6 +241,32 @@ pub fn deployment_payload(
         ),
     ]);
 
+    let pvc = PVC {
+        metadata: ObjectMeta {
+            name: Some(format!("{}-{}-pvc", app_name, strategy.service_name())),
+            namespace: Some(app_name.to_owned()),
+            ..Default::default()
+        },
+        spec: Some(PVCSpec {
+            access_modes: Some(vec!["ReadWriteOnce".to_owned()]),
+            resources: Some(ResourceRequirements {
+                requests: Some(BTreeMap::from_iter(vec![(
+                    "storage".to_owned(),
+                    Quantity("2Gi".to_owned()),
+                )])),
+                ..Default::default()
+            }),
+            selector: Some(LabelSelector {
+                match_labels: Some(BTreeMap::from_iter(vec![(
+                    "namespace".to_owned(),
+                    app_name.to_owned(),
+                )])),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
     V1Deployment {
         metadata: ObjectMeta {
             name: Some(format!(
