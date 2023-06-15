@@ -37,16 +37,23 @@ use crate::infrastructure::traefik::TraefikIngressRoute;
 use crate::infrastructure::Infrastructure;
 use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus};
 use crate::models::{Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig};
+use crate::registry::ImageInfo;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
 use failure::Error;
 use futures::future::join_all;
+use k8s_openapi::api::core::v1::ResourceRequirements;
+use k8s_openapi::api::storage::v1::StorageClass;
 use k8s_openapi::api::{
     apps::v1::Deployment as V1Deployment, core::v1::Namespace as V1Namespace,
-    core::v1::PersistentVolume as PV, core::v1::PersistentVolumeSpec as PVSpec,
-    core::v1::Pod as V1Pod, core::v1::Secret as V1Secret, core::v1::Service as V1Service,
+    core::v1::PersistentVolume as PV, core::v1::PersistentVolumeClaim as PVC,
+    core::v1::PersistentVolumeClaimSpec as PVCSpec,
+    core::v1::PersistentVolumeClaimVolumeSource as PVCSource,
+    core::v1::PersistentVolumeSpec as PVSpec, core::v1::Pod as V1Pod, core::v1::Secret as V1Secret,
+    core::v1::Service as V1Service,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
 use kube::core::ObjectMeta;
 use kube::{
     api::{Api, DeleteParams, ListParams, LogParams, Patch, PatchParams, PostParams},
@@ -344,6 +351,7 @@ impl KubernetesInfrastructure {
         service: &'a DeployableService,
         container_config: &ContainerConfig,
         persistent_volume: &PV,
+        image_info: Option<&ImageInfo>,
     ) -> Result<&'a DeployableService, KubernetesInfrastructureError> {
         if let Some(files) = service.files() {
             self.deploy_secret(app_name, service, &files).await?;
@@ -351,6 +359,40 @@ impl KubernetesInfrastructure {
 
         let client = self.client().await?;
 
+        let persistent_volume_claim = PVC {
+            metadata: ObjectMeta {
+                name: Some(format!("{}-{}-pvc", app_name, strategy.service_name())),
+                namespace: Some(app_name.to_owned()),
+                ..Default::default()
+            },
+            spec: Some(PVCSpec {
+                access_modes: Some(vec!["ReadWriteOnce".to_owned()]),
+                resources: Some(ResourceRequirements {
+                    requests: Some(BTreeMap::from_iter(vec![(
+                        "storage".to_owned(),
+                        Quantity("2Gi".to_owned()),
+                    )])),
+                    ..Default::default()
+                }),
+                selector: Some(LabelSelector {
+                    match_labels: Some(BTreeMap::from_iter(vec![(
+                        "namespace".to_owned(),
+                        app_name.to_owned(),
+                    )])),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let created_persistent_volume_claim = Api::all(self.client().await?)
+            .create(&PostParams::default(), &persistent_volume_claim)
+            .await?;
+        let attached_volumes = match image_info {
+            Some(info) => info.attached_volume(),
+            None => Vec::new(),
+        };
         match Api::namespaced(client.clone(), app_name)
             .create(
                 &PostParams::default(),
@@ -361,6 +403,8 @@ impl KubernetesInfrastructure {
                     self.config
                         .registry_credentials(&service.image().registry().unwrap_or_default())
                         .is_some(),
+                    created_persistent_volume_claim.metadata.name.as_ref(),
+                    &attached_volumes,
                 ),
             )
             .await
@@ -392,6 +436,8 @@ impl KubernetesInfrastructure {
                                     &service.image().registry().unwrap_or_default(),
                                 )
                                 .is_some(),
+                            created_persistent_volume_claim.metadata.name.as_ref(),
+                            &attached_volumes,
                         )),
                     )
                     .await?;
@@ -526,6 +572,33 @@ impl Infrastructure for KubernetesInfrastructure {
         self.create_namespace_if_necessary(app_name).await?;
         self.create_pull_secrets_if_necessary(app_name, services)
             .await?;
+
+        let storage_class = StorageClass {
+            metadata: ObjectMeta {
+                name: Some("local-storage".into()),
+                ..Default::default()
+            },
+            provisioner: "kubernetes.io/no-provisioner".into(),
+            volume_binding_mode: Some("WaitForFirstConsumer".into()),
+            ..Default::default()
+        };
+
+        let created_storage_class = Api::all(self.client().await?)
+            .create(&PostParams::default(), &storage_class)
+            .await?;
+        let storage_class = StorageClass {
+            metadata: ObjectMeta {
+                name: Some("local-storage".into()),
+                ..Default::default()
+            },
+            provisioner: "kubernetes.io/no-provisioner".into(),
+            volume_binding_mode: Some("WaitForFirstConsumer".into()),
+            ..Default::default()
+        };
+
+        let created_storage_class = Api::all(self.client().await?)
+            .create(&PostParams::default(), &storage_class)
+            .await?;
         let persistent_volume = PV {
             metadata: ObjectMeta {
                 name: Some(format!("prevant-pv-{}", app_name)),
@@ -542,6 +615,7 @@ impl Infrastructure for KubernetesInfrastructure {
                 )])),
                 access_modes: Some(vec!["ReadWriteOnce".into()]),
                 persistent_volume_reclaim_policy: Some("Retain".into()),
+                storage_class_name: Some("local-storage".into()),
                 ..Default::default()
             }),
             ..Default::default()
@@ -558,6 +632,7 @@ impl Infrastructure for KubernetesInfrastructure {
                     service,
                     container_config,
                     &created_persistent_volume,
+                    deployment_unit.image_info(strategy.image()),
                 )
             })
             .collect::<Vec<_>>();
