@@ -143,6 +143,8 @@ pub fn deployment_payload(
     strategy: &DeploymentStrategy,
     container_config: &ContainerConfig,
     use_image_pull_secret: bool,
+    pv_claim_name: Option<&String>,
+    attached_volumes: &Vec<&String>,
 ) -> V1Deployment {
     let env = strategy.env().map(|env| {
         env.iter()
@@ -166,7 +168,7 @@ pub fn deployment_payload(
         BTreeMap::from([(IMAGE_LABEL.to_string(), strategy.image().to_string())])
     };
 
-    let volume_mounts = strategy.files().map(|files| {
+    let volume_mounts = match strategy.files().map(|files| {
         let parent_paths = files
             .iter()
             .filter_map(|(path, _)| path.parent())
@@ -180,9 +182,43 @@ pub fn deployment_payload(
                 ..Default::default()
             })
             .collect::<Vec<_>>()
-    });
+    }) {
+        Some(mut val) => {
+            for attached_volume in attached_volumes {
+                val.push(VolumeMount {
+                    name: format!(
+                        "{}-volume",
+                        attached_volume
+                            .split("/")
+                            .last()
+                            .unwrap_or_else(|| "default")
+                    ),
+                    mount_path: attached_volume.to_string(),
+                    ..Default::default()
+                });
+            }
+            Some(val)
+        }
+        None => {
+            let mut val = Vec::new();
+            for attached_volume in attached_volumes {
+                val.push(VolumeMount {
+                    name: format!(
+                        "{}-volume",
+                        attached_volume
+                            .split("/")
+                            .last()
+                            .unwrap_or_else(|| "default")
+                    ),
+                    mount_path: attached_volume.to_string(),
+                    ..Default::default()
+                });
+            }
+            Some(val)
+        }
+    };
 
-    let volumes = strategy.files().map(|files| {
+    let volumes = match strategy.files().map(|files| {
         let files = files
             .iter()
             .filter_map(|(path, _)| path.parent().map(|parent| (parent, path)))
@@ -216,8 +252,34 @@ pub fn deployment_payload(
                     ..Default::default()
                 }
             })
-            .collect()
-    });
+            .collect::<Vec<Volume>>()
+    }) {
+        Some(mut val) => pv_claim_name.and_then(|pvc| {
+            val.push(Volume {
+                name: format!("{}-{}-storage", app_name, strategy.service_name()),
+                persistent_volume_claim: Some(PVCSource {
+                    claim_name: pvc.to_string(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+            Some(val)
+        }),
+        None => {
+            let mut val = Vec::new();
+            pv_claim_name.and_then(|pvc| {
+                val.push(Volume {
+                    name: format!("{}-{}-storage", app_name, strategy.service_name()),
+                    persistent_volume_claim: Some(PVCSource {
+                        claim_name: pvc.to_string(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                });
+                Some(val)
+            })
+        }
+    };
 
     let resources = container_config
         .memory_limit()
@@ -241,32 +303,6 @@ pub fn deployment_payload(
         ),
     ]);
 
-    let pvc = PVC {
-        metadata: ObjectMeta {
-            name: Some(format!("{}-{}-pvc", app_name, strategy.service_name())),
-            namespace: Some(app_name.to_owned()),
-            ..Default::default()
-        },
-        spec: Some(PVCSpec {
-            access_modes: Some(vec!["ReadWriteOnce".to_owned()]),
-            resources: Some(ResourceRequirements {
-                requests: Some(BTreeMap::from_iter(vec![(
-                    "storage".to_owned(),
-                    Quantity("2Gi".to_owned()),
-                )])),
-                ..Default::default()
-            }),
-            selector: Some(LabelSelector {
-                match_labels: Some(BTreeMap::from_iter(vec![(
-                    "namespace".to_owned(),
-                    app_name.to_owned(),
-                )])),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
     V1Deployment {
         metadata: ObjectMeta {
             name: Some(format!(
@@ -548,8 +584,14 @@ mod tests {
     fn should_create_deployment_payload() {
         let config = sc!("db", "mariadb:10.3.17");
 
-        let payload =
-            deployment_payload("master", &config.into(), &ContainerConfig::default(), false);
+        let payload = deployment_payload(
+            "master",
+            &config.into(),
+            &ContainerConfig::default(),
+            false,
+            Some(&String::from("master-db-pvc")),
+            &vec![&String::from("var/lib/data")],
+        );
 
         assert_json_diff::assert_json_include!(
             actual: payload,
@@ -558,7 +600,7 @@ mod tests {
               "kind": "Deployment",
               "metadata": {
                 "annotations": {
-                  "com.aixigo.preview.servant.image": "docker.io/library/mariadb:10.3.17",
+                  "com.aixigo.preview.servant.image": "docker.io/library/mariadb:10.3.17"
                 },
                 "labels": {
                   "com.aixigo.preview.servant.app-name": "master",
@@ -588,6 +630,12 @@ mod tests {
                     }
                   },
                   "spec": {
+                    "volumes": [{
+                      "name": "master-db-storage",
+                      "persistentVolumeClaim":{
+                        "claimName": "master-db-pvc"
+                      }
+                    }],
                     "containers": [
                       {
                         "image": "docker.io/library/mariadb:10.3.17",
@@ -596,6 +644,12 @@ mod tests {
                         "ports": [
                           {
                             "containerPort": 80
+                          }
+                        ],
+                        "volumeMounts": [
+                          {
+                            "mountPath": "var/lib/data",
+                            "name": "data-volume"
                           }
                         ]
                       }
@@ -615,8 +669,14 @@ mod tests {
             SecUtf8::from("example"),
         )])));
 
-        let payload =
-            deployment_payload("master", &config.into(), &ContainerConfig::default(), false);
+        let payload = deployment_payload(
+            "master",
+            &config.into(),
+            &ContainerConfig::default(),
+            false,
+            None,
+            &Vec::new(),
+        );
 
         assert_json_diff::assert_json_include!(
             actual: payload,
@@ -685,8 +745,14 @@ mod tests {
             ),
         ])));
 
-        let payload =
-            deployment_payload("master", &config.into(), &ContainerConfig::default(), false);
+        let payload = deployment_payload(
+            "master",
+            &config.into(),
+            &ContainerConfig::default(),
+            false,
+            None,
+            &Vec::new(),
+        );
 
         assert_json_diff::assert_json_include!(
             actual: payload,
