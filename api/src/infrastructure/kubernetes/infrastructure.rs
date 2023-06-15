@@ -43,8 +43,11 @@ use failure::Error;
 use futures::future::join_all;
 use k8s_openapi::api::{
     apps::v1::Deployment as V1Deployment, core::v1::Namespace as V1Namespace,
+    core::v1::PersistentVolume as PV, core::v1::PersistentVolumeSpec as PVSpec,
     core::v1::Pod as V1Pod, core::v1::Secret as V1Secret, core::v1::Service as V1Service,
 };
+use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
+use kube::core::ObjectMeta;
 use kube::{
     api::{Api, DeleteParams, ListParams, LogParams, Patch, PatchParams, PostParams},
     client::Client,
@@ -56,6 +59,7 @@ use multimap::MultiMap;
 use secstr::SecUtf8;
 use std::collections::BTreeMap;
 use std::convert::{From, TryFrom};
+use std::iter::FromIterator;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -339,6 +343,7 @@ impl KubernetesInfrastructure {
         app_name: &String,
         service: &'a DeployableService,
         container_config: &ContainerConfig,
+        persistent_volume: &PV,
     ) -> Result<&'a DeployableService, KubernetesInfrastructureError> {
         if let Some(files) = service.files() {
             self.deploy_secret(app_name, service, &files).await?;
@@ -521,10 +526,40 @@ impl Infrastructure for KubernetesInfrastructure {
         self.create_namespace_if_necessary(app_name).await?;
         self.create_pull_secrets_if_necessary(app_name, services)
             .await?;
+        let persistent_volume = PV {
+            metadata: ObjectMeta {
+                name: Some(format!("prevant-pv-{}", app_name)),
+                labels: Some(BTreeMap::from_iter(vec![(
+                    "namespace".to_owned(),
+                    app_name.to_string(),
+                )])),
+                ..Default::default()
+            },
+            spec: Some(PVSpec {
+                capacity: Some(BTreeMap::from_iter(vec![(
+                    "storage".into(),
+                    Quantity("2Gi".into()),
+                )])),
+                access_modes: Some(vec!["ReadWriteOnce".into()]),
+                persistent_volume_reclaim_policy: Some("Retain".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
 
+        let created_persistent_volume = Api::all(self.client().await?)
+            .create(&PostParams::default(), &persistent_volume)
+            .await?;
         let futures = services
             .iter()
-            .map(|service| self.deploy_service(app_name, service, container_config))
+            .map(|service| {
+                self.deploy_service(
+                    app_name,
+                    service,
+                    container_config,
+                    &created_persistent_volume,
+                )
+            })
             .collect::<Vec<_>>();
 
         for deploy_result in join_all(futures).await {
