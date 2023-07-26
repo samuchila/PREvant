@@ -62,6 +62,7 @@ pub struct WithResolvedImages {
 
 pub struct WithAppliedHooks {
     app_name: AppName,
+    image_infos: HashMap<Image, ImageInfo>,
     strategies: Vec<DeploymentStrategy>,
 }
 
@@ -71,6 +72,7 @@ pub struct DeploymentUnitBuilder<Stage> {
 
 pub struct DeploymentUnit {
     app_name: AppName,
+    image_infos: HashMap<Image, ImageInfo>,
     strategies: Vec<DeploymentStrategy>,
 }
 
@@ -81,6 +83,10 @@ impl DeploymentUnit {
 
     pub fn app_name(&self) -> &AppName {
         &self.app_name
+    }
+
+    pub fn image_info(&self, image: &Image) -> Option<&ImageInfo> {
+        self.image_infos.get(image)
     }
 }
 
@@ -347,6 +353,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
         Ok(DeploymentUnitBuilder {
             stage: WithAppliedHooks {
                 app_name: self.stage.app_name,
+                image_infos: self.stage.image_infos,
                 strategies: strategies,
             },
         })
@@ -389,6 +396,7 @@ impl DeploymentUnitBuilder<WithAppliedHooks> {
     pub fn build(self) -> DeploymentUnit {
         DeploymentUnit {
             app_name: self.stage.app_name,
+            image_infos: self.stage.image_infos,
             strategies: self.stage.strategies,
         }
     }

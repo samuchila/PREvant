@@ -155,6 +155,13 @@ impl ImageInfo {
     pub fn digest(&self) -> &String {
         &self.digest
     }
+
+    pub fn attached_volume(&self) -> Vec<&String> {
+        match self.blob.as_ref() {
+            Some(info) => info.attached_volume(),
+            None => Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,12 +173,18 @@ impl ImageBlob {
     pub fn exposed_port(&self) -> Option<u16> {
         self.config.exposed_port()
     }
+
+    pub fn attached_volume(&self) -> Vec<&String> {
+        self.config.attached_volume()
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct ImageConfig {
     #[serde(rename = "ExposedPorts")]
     exposed_ports: Option<HashMap<String, serde_json::Value>>,
+    #[serde(rename = "Volumes")]
+    attached_volumes: Option<HashMap<String, serde_json::Value>>,
 }
 
 impl ImageConfig {
@@ -190,6 +203,14 @@ impl ImageConfig {
             .filter_map(|captures| captures.name("port"))
             .filter_map(|port| u16::from_str(port.as_str()).ok())
             .min()
+    }
+
+    fn attached_volume(&self) -> Vec<&String> {
+        let volumes = match &self.attached_volumes {
+            Some(volumes) => volumes,
+            None => return Vec::new(),
+        };
+        volumes.iter().map(|(k, _v)| k).collect::<Vec<&String>>()
     }
 }
 
@@ -233,18 +254,18 @@ mod tests {
     fn should_return_exposed_port() {
         let blob = serde_json::from_str::<ImageBlob>(
             r#"{
-                "config": {
-                    "Hostname": "837a64dcc771",
-                    "Domainname": "",
-                    "User": "",
-                    "AttachStdin": false,
-                    "AttachStdout": false,
-                    "AttachStderr": false,
-                    "ExposedPorts": {
-                      "8080/tcp": {},
-                      "9080/udp": {}
-                    }
-                } }"#,
+                 "config": {
+                     "Hostname": "837a64dcc771",
+                     "Domainname": "",
+                     "User": "",
+                     "AttachStdin": false,
+                     "AttachStdout": false,
+                     "AttachStderr": false,
+                     "ExposedPorts": {
+                       "8080/tcp": {},
+                       "9080/udp": {}
+                     }
+                 } }"#,
         )
         .unwrap();
 
@@ -255,17 +276,64 @@ mod tests {
     fn should_return_exposed_port_without_ports() {
         let blob = serde_json::from_str::<ImageBlob>(
             r#"{
-                "config": {
-                    "Hostname": "837a64dcc771",
-                    "Domainname": "",
-                    "User": "",
-                    "AttachStdin": false,
-                    "AttachStdout": false,
-                    "AttachStderr": false
-                } }"#,
+                 "config": {
+                     "Hostname": "837a64dcc771",
+                     "Domainname": "",
+                     "User": "",
+                     "AttachStdin": false,
+                     "AttachStdout": false,
+                     "AttachStderr": false
+                 } }"#,
         )
         .unwrap();
 
         assert_eq!(blob.exposed_port(), None);
+    }
+
+    #[test]
+    fn should_return_attached_volume() {
+        let blob = serde_json::from_str::<ImageBlob>(
+            r#"{
+                 "config": {
+                     "Hostname": "837a64dcc771",
+                     "Domainname": "",
+                     "User": "",
+                     "AttachStdin": false,
+                     "AttachStdout": false,
+                     "AttachStderr": false,
+                     "ExposedPorts": {
+                       "8080/tcp": {},
+                       "9080/udp": {}
+                     },
+                     "Volumes": {
+                        "var/lib/data" :{}
+                     }
+                 } }"#,
+        )
+        .unwrap();
+
+        assert_eq!(blob.attached_volume(), vec!["var/lib/data"]);
+    }
+
+    #[test]
+    fn should_return_none_if_no_attached_volume() {
+        let blob = serde_json::from_str::<ImageBlob>(
+            r#"{
+                 "config": {
+                     "Hostname": "837a64dcc771",
+                     "Domainname": "",
+                     "User": "",
+                     "AttachStdin": false,
+                     "AttachStdout": false,
+                     "AttachStderr": false,
+                     "ExposedPorts": {
+                       "8080/tcp": {},
+                       "9080/udp": {}
+                     }
+                 } }"#,
+        )
+        .unwrap();
+
+        assert!(blob.attached_volume().is_empty());
     }
 }
