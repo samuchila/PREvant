@@ -174,6 +174,10 @@ impl DeploymentUnit {
     pub fn app_name(&self) -> &AppName {
         &self.app_name
     }
+
+    pub fn image_info(&self, image: &Image) -> Option<&ImageInfo> {
+        self.image_infos.get(image)
+    }
 }
 
 impl DeploymentUnitBuilder<Initialized> {

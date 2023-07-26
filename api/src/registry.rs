@@ -254,18 +254,18 @@ mod tests {
     fn should_return_exposed_port() {
         let blob = serde_json::from_str::<ImageBlob>(
             r#"{
-                "config": {
-                    "Hostname": "837a64dcc771",
-                    "Domainname": "",
-                    "User": "",
-                    "AttachStdin": false,
-                    "AttachStdout": false,
-                    "AttachStderr": false,
-                    "ExposedPorts": {
-                      "8080/tcp": {},
-                      "9080/udp": {}
-                    }
-                } }"#,
+                 "config": {
+                     "Hostname": "837a64dcc771",
+                     "Domainname": "",
+                     "User": "",
+                     "AttachStdin": false,
+                     "AttachStdout": false,
+                     "AttachStderr": false,
+                     "ExposedPorts": {
+                       "8080/tcp": {},
+                       "9080/udp": {}
+                     }
+                 } }"#,
         )
         .unwrap();
 
@@ -276,14 +276,14 @@ mod tests {
     fn should_return_exposed_port_without_ports() {
         let blob = serde_json::from_str::<ImageBlob>(
             r#"{
-                "config": {
-                    "Hostname": "837a64dcc771",
-                    "Domainname": "",
-                    "User": "",
-                    "AttachStdin": false,
-                    "AttachStdout": false,
-                    "AttachStderr": false
-                } }"#,
+                 "config": {
+                     "Hostname": "837a64dcc771",
+                     "Domainname": "",
+                     "User": "",
+                     "AttachStdin": false,
+                     "AttachStdout": false,
+                     "AttachStderr": false
+                 } }"#,
         )
         .unwrap();
 

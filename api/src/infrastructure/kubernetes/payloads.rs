@@ -36,10 +36,9 @@ use base64::{engine::general_purpose, Engine};
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::DeploymentSpec;
 use k8s_openapi::api::core::v1::{
-    Container, ContainerPort, EnvVar, KeyToPath, LocalObjectReference, PersistentVolume as PV,
-    PersistentVolumeClaim as PVC, PersistentVolumeClaimSpec as PVCSpec,
-    PersistentVolumeClaimVolumeSource as PVCSource, PersistentVolumeSpec as PVSpec, PodSpec,
-    PodTemplateSpec, ResourceRequirements, SecretVolumeSource, Volume, VolumeMount,
+    Container, ContainerPort, EnvVar, KeyToPath, LocalObjectReference, PersistentVolumeClaim,
+    PersistentVolumeClaimVolumeSource as PVCSource, PodSpec, PodTemplateSpec, ResourceRequirements,
+    SecretVolumeSource, Volume, VolumeMount,
 };
 use k8s_openapi::api::{
     apps::v1::Deployment as V1Deployment, core::v1::Namespace as V1Namespace,
@@ -177,8 +176,7 @@ pub fn deployment_payload(
     service: &DeployableService,
     container_config: &ContainerConfig,
     use_image_pull_secret: bool,
-    pv_claim_name: Option<&String>,
-    attached_volumes: &Vec<&String>,
+    persistent_volume_claims: &BTreeMap<&str, PersistentVolumeClaim>,
 ) -> V1Deployment {
     let env = service.env().map(|env| {
         env.iter()
@@ -218,7 +216,7 @@ pub fn deployment_payload(
             .collect::<Vec<_>>()
     }) {
         Some(mut val) => {
-            for attached_volume in attached_volumes {
+            for attached_volume in persistent_volume_claims.keys() {
                 val.push(VolumeMount {
                     name: format!(
                         "{}-volume",
@@ -227,7 +225,7 @@ pub fn deployment_payload(
                             .last()
                             .unwrap_or_else(|| "default")
                     ),
-                    mount_path: attached_volume.to_string(),
+                    mount_path: format!("/data/{}{}", app_name, attached_volume),
                     ..Default::default()
                 });
             }
@@ -235,7 +233,7 @@ pub fn deployment_payload(
         }
         None => {
             let mut val = Vec::new();
-            for attached_volume in attached_volumes {
+            for attached_volume in persistent_volume_claims.keys() {
                 val.push(VolumeMount {
                     name: format!(
                         "{}-volume",
@@ -244,7 +242,7 @@ pub fn deployment_payload(
                             .last()
                             .unwrap_or_else(|| "default")
                     ),
-                    mount_path: attached_volume.to_string(),
+                    mount_path: format!("/data/{}{}", app_name, attached_volume),
                     ..Default::default()
                 });
             }
@@ -288,30 +286,49 @@ pub fn deployment_payload(
             })
             .collect::<Vec<Volume>>()
     }) {
-        Some(mut val) => pv_claim_name.and_then(|pvc| {
-            val.push(Volume {
-                name: format!("{}-{}-storage", app_name, strategy.service_name()),
-                persistent_volume_claim: Some(PVCSource {
-                    claim_name: pvc.to_string(),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            });
+        Some(mut val) => {
+            persistent_volume_claims
+                .iter()
+                .for_each(|(attached_volume, pvc)| {
+                    val.push(Volume {
+                        name: format!(
+                            "{}-volume",
+                            attached_volume
+                                .split("/")
+                                .last()
+                                .unwrap_or_else(|| "default")
+                        ),
+                        persistent_volume_claim: Some(PVCSource {
+                            claim_name: pvc.metadata.name.clone().unwrap_or_default(),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    });
+                });
+
             Some(val)
-        }),
+        }
         None => {
             let mut val = Vec::new();
-            pv_claim_name.and_then(|pvc| {
-                val.push(Volume {
-                    name: format!("{}-{}-storage", app_name, strategy.service_name()),
-                    persistent_volume_claim: Some(PVCSource {
-                        claim_name: pvc.to_string(),
+            persistent_volume_claims
+                .iter()
+                .for_each(|(attached_volume, pvc)| {
+                    val.push(Volume {
+                        name: format!(
+                            "{}-volume",
+                            attached_volume
+                                .split("/")
+                                .last()
+                                .unwrap_or_else(|| "default")
+                        ),
+                        persistent_volume_claim: Some(PVCSource {
+                            claim_name: pvc.metadata.name.clone().unwrap_or_default(),
+                            ..Default::default()
+                        }),
                         ..Default::default()
-                    }),
-                    ..Default::default()
+                    });
                 });
-                Some(val)
-            })
+            Some(val)
         }
     };
 
@@ -362,6 +379,7 @@ pub fn deployment_payload(
                     ..Default::default()
                 }),
                 spec: Some(PodSpec {
+                    volumes,
                     containers: vec![Container {
                         name: service.service_name().to_string(),
                         image: Some(service.image().to_string()),
@@ -375,7 +393,6 @@ pub fn deployment_payload(
                         resources,
                         ..Default::default()
                     }],
-                    volumes,
                     image_pull_secrets: if use_image_pull_secret {
                         Some(vec![LocalObjectReference {
                             name: Some(format!("{app_name}-image-pull-secret")),
@@ -669,8 +686,7 @@ mod tests {
             ),
             &ContainerConfig::default(),
             false,
-            Some(&String::from("master-db-pvc")),
-            &vec![&String::from("var/lib/data")],
+            &BTreeMap::new(),
         );
 
         assert_json_diff::assert_json_include!(
@@ -761,8 +777,7 @@ mod tests {
             ),
             &ContainerConfig::default(),
             false,
-            None,
-            &Vec::new(),
+            &BTreeMap::new(),
         );
 
         assert_json_diff::assert_json_include!(
@@ -844,8 +859,7 @@ mod tests {
             ),
             &ContainerConfig::default(),
             false,
-            None,
-            &Vec::new(),
+            &BTreeMap::new(),
         );
 
         assert_json_diff::assert_json_include!(
