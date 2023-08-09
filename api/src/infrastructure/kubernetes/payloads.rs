@@ -36,11 +36,9 @@ use base64::{engine::general_purpose, Engine};
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::DeploymentSpec;
 use k8s_openapi::api::core::v1::{
-    Container, Container, ContainerPort, ContainerPort, EnvVar, EnvVar, KeyToPath, KeyToPath,
-    LocalObjectReference, LocalObjectReference, PersistentVolumeClaim, PersistentVolumeClaim,
-    PersistentVolumeClaimVolumeSource as PVCSource, PersistentVolumeClaimVolumeSource as PVCSource,
-    PodSpec, PodSpec, PodTemplateSpec, PodTemplateSpec, ResourceRequirements, ResourceRequirements,
-    SecretVolumeSource, SecretVolumeSource, Volume, Volume, VolumeMount, VolumeMount,
+    Container, ContainerPort, EnvVar, KeyToPath, LocalObjectReference, PersistentVolumeClaim,
+    PersistentVolumeClaimVolumeSource as PVCSource, PodSpec, PodTemplateSpec, ResourceRequirements,
+    SecretVolumeSource, Volume, VolumeMount,
 };
 use k8s_openapi::api::{
     apps::v1::Deployment as V1Deployment, core::v1::Namespace as V1Namespace,
@@ -496,7 +494,6 @@ pub fn image_pull_secret_payload(
     app_name: &str,
     registries_and_credentials: BTreeMap<String, (&str, &SecUtf8)>,
 ) -> V1Secret {
-    use core::iter::FromIterator;
     let data = ByteString(
         serde_json::json!({
             "auths":
