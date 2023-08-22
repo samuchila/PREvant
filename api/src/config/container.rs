@@ -29,13 +29,6 @@ use serde::{de, Deserialize, Deserializer};
 pub struct ContainerConfig {
     #[serde(deserialize_with = "ContainerConfig::parse_from_memory_string")]
     memory_limit: Option<u64>,
-    #[serde(
-        default = "ContainerConfig::default_storage",
-        deserialize_with = "ContainerConfig::parse_from_storage_string"
-    )]
-    kubernetes_storage_size: String,
-    #[serde(default)]
-    kubernetes_storage_enable: bool,
 }
 
 impl ContainerConfig {
@@ -58,37 +51,7 @@ impl ContainerConfig {
         Ok(Some(limit * 1024_u64.pow(exp)))
     }
 
-    fn parse_from_storage_string<'de, D>(deserializer: D) -> Result<String, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let container_limit = String::deserialize(deserializer)?;
-
-        let (size, unit) = container_limit.split_at(container_limit.len() - 1);
-
-        let converted_unit = match unit.to_lowercase().as_str() {
-            "k" => "Ki",
-            "m" => "Mi",
-            "g" => "Gi",
-            _ => "",
-        };
-
-        Ok(format!("{}{}", size, converted_unit))
-    }
-
-    fn default_storage() -> String {
-        "1Gi".to_string()
-    }
-
     pub fn memory_limit(&self) -> Option<u64> {
         self.memory_limit
-    }
-
-    pub fn kubernetes_storage_size(&self) -> &String {
-        &self.kubernetes_storage_size
-    }
-
-    pub fn kubernetes_storage_enable(&self) -> bool {
-        self.kubernetes_storage_enable
     }
 }

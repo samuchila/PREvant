@@ -25,6 +25,7 @@
  */
 use super::super::{
     APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
+    STORAGE_TYPE_LABEL,
 };
 use crate::config::ContainerConfig;
 use crate::deployment::deployment_unit::{DeployableService, DeploymentStrategy};
@@ -37,7 +38,7 @@ use chrono::Utc;
 use k8s_openapi::api::apps::v1::DeploymentSpec;
 use k8s_openapi::api::core::v1::{
     Container, ContainerPort, EnvVar, KeyToPath, LocalObjectReference, PersistentVolumeClaim,
-    PersistentVolumeClaimVolumeSource as PVCSource, PodSpec, PodTemplateSpec, ResourceRequirements,
+    PersistentVolumeClaimVolumeSource, PodSpec, PodTemplateSpec, ResourceRequirements,
     SecretVolumeSource, Volume, VolumeMount,
 };
 use k8s_openapi::api::{
@@ -176,7 +177,7 @@ pub fn deployment_payload(
     service: &DeployableService,
     container_config: &ContainerConfig,
     use_image_pull_secret: bool,
-    persistent_volume_claims: &BTreeMap<&str, PersistentVolumeClaim>,
+    persitent_volume_map: &BTreeMap<&String, PersistentVolumeClaim>,
 ) -> V1Deployment {
     let env = service.env().map(|env| {
         env.iter()
@@ -216,35 +217,15 @@ pub fn deployment_payload(
             .collect::<Vec<_>>()
     }) {
         Some(mut val) => {
-            for attached_volume in persistent_volume_claims.keys() {
-                val.push(VolumeMount {
-                    name: format!(
-                        "{}-volume",
-                        attached_volume
-                            .split("/")
-                            .last()
-                            .unwrap_or_else(|| "default")
-                    ),
-                    mount_path: format!("/data/{}{}", app_name, attached_volume),
-                    ..Default::default()
-                });
+            for (path, pvc) in persitent_volume_map {
+                val.push(persistent_volume_mount_payload(path, pvc));
             }
             Some(val)
         }
         None => {
             let mut val = Vec::new();
-            for attached_volume in persistent_volume_claims.keys() {
-                val.push(VolumeMount {
-                    name: format!(
-                        "{}-volume",
-                        attached_volume
-                            .split("/")
-                            .last()
-                            .unwrap_or_else(|| "default")
-                    ),
-                    mount_path: format!("/data/{}{}", app_name, attached_volume),
-                    ..Default::default()
-                });
+            for (path, pvc) in persitent_volume_map {
+                val.push(persistent_volume_mount_payload(path, pvc));
             }
             Some(val)
         }
@@ -287,47 +268,17 @@ pub fn deployment_payload(
             .collect::<Vec<Volume>>()
     }) {
         Some(mut val) => {
-            persistent_volume_claims
-                .iter()
-                .for_each(|(attached_volume, pvc)| {
-                    val.push(Volume {
-                        name: format!(
-                            "{}-volume",
-                            attached_volume
-                                .split("/")
-                                .last()
-                                .unwrap_or_else(|| "default")
-                        ),
-                        persistent_volume_claim: Some(PVCSource {
-                            claim_name: pvc.metadata.name.clone().unwrap_or_default(),
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    });
-                });
+            persitent_volume_map.iter().for_each(|(_, pvc)| {
+                val.push(persistent_volume_payload(pvc));
+            });
 
             Some(val)
         }
         None => {
             let mut val = Vec::new();
-            persistent_volume_claims
-                .iter()
-                .for_each(|(attached_volume, pvc)| {
-                    val.push(Volume {
-                        name: format!(
-                            "{}-volume",
-                            attached_volume
-                                .split("/")
-                                .last()
-                                .unwrap_or_else(|| "default")
-                        ),
-                        persistent_volume_claim: Some(PVCSource {
-                            claim_name: pvc.metadata.name.clone().unwrap_or_default(),
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    });
-                });
+            persitent_volume_map.iter().for_each(|(_, pvc)| {
+                val.push(persistent_volume_payload(pvc));
+            });
             Some(val)
         }
     };
@@ -660,9 +611,55 @@ pub fn middleware_payload(app_name: &String, service: &DeployableService) -> Vec
         .collect::<Vec<_>>()
 }
 
+pub fn persistent_volume_mount_payload(
+    path: &str,
+    persitent_volume_claim: &PersistentVolumeClaim,
+) -> VolumeMount {
+    VolumeMount {
+        name: format!(
+            "{}-volume",
+            persitent_volume_claim
+                .metadata
+                .labels
+                .as_ref()
+                .unwrap_or(&BTreeMap::new())
+                .get(STORAGE_TYPE_LABEL)
+                .unwrap_or(&String::from("default"))
+        ),
+        mount_path: path.to_string(),
+        ..Default::default()
+    }
+}
+
+pub fn persistent_volume_payload(persistent_volume_claim: &PersistentVolumeClaim) -> Volume {
+    Volume {
+        name: format!(
+            "{}-volume",
+            persistent_volume_claim
+                .metadata
+                .labels
+                .as_ref()
+                .unwrap_or(&BTreeMap::new())
+                .get(STORAGE_TYPE_LABEL)
+                .unwrap_or(&String::from("default"))
+        ),
+        persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
+            claim_name: persistent_volume_claim
+                .metadata
+                .name
+                .clone()
+                .unwrap_or_default(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
+
+    use k8s_openapi::api::core::v1::PersistentVolumeClaimSpec;
 
     use super::*;
     use crate::infrastructure::{TraefikIngressRoute, TraefikRouterRule};
@@ -725,12 +722,6 @@ mod tests {
                     }
                   },
                   "spec": {
-                    "volumes": [{
-                      "name": "master-db-storage",
-                      "persistentVolumeClaim":{
-                        "claimName": "master-db-pvc"
-                      }
-                    }],
                     "containers": [
                       {
                         "image": "docker.io/library/mariadb:10.3.17",
@@ -739,12 +730,6 @@ mod tests {
                         "ports": [
                           {
                             "containerPort": 80
-                          }
-                        ],
-                        "volumeMounts": [
-                          {
-                            "mountPath": "var/lib/data",
-                            "name": "data-volume"
                           }
                         ]
                       }
@@ -1000,6 +985,118 @@ mod tests {
                 }
               },
             }]),
+        );
+    }
+
+    #[test]
+    fn should_create_deployment_payload_with_persistent_volume_claim() {
+        let config = sc!("db", "mariadb:10.3.17");
+
+        let persistent_volume_claim = PersistentVolumeClaim {
+            metadata: ObjectMeta {
+                name: Some(String::from("master-db-pvc-abc")),
+                namespace: Some(String::from("master")),
+                labels: Some(BTreeMap::from([
+                    (APP_NAME_LABEL.to_owned(), "master".to_owned()),
+                    (SERVICE_NAME_LABEL.to_owned(), "db".to_owned()),
+                    (STORAGE_TYPE_LABEL.to_owned(), "data".to_owned()),
+                ])),
+                ..Default::default()
+            },
+            spec: Some(PersistentVolumeClaimSpec {
+                storage_class_name: Some("local-path".to_owned()),
+                access_modes: Some(vec!["ReadWriteOnce".to_owned()]),
+                resources: Some(ResourceRequirements {
+                    requests: Some(BTreeMap::from_iter(vec![(
+                        "storage".to_owned(),
+                        Quantity("2Gi".to_owned()),
+                    )])),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let payload = deployment_payload(
+            "master",
+            &DeployableService::new(
+                config,
+                DeploymentStrategy::RedeployAlways,
+                TraefikIngressRoute::with_rule(TraefikRouterRule::path_prefix_rule(&[
+                    "master", "db",
+                ])),
+                vec![String::from("/var/lib/data")],
+            ),
+            &ContainerConfig::default(),
+            false,
+            &BTreeMap::from([(&String::from("/var/lib/data"), persistent_volume_claim)]),
+        );
+
+        assert_json_diff::assert_json_include!(
+            actual:payload,
+            expected:serde_json::json!({
+              "apiVersion": "apps/v1",
+              "kind": "Deployment",
+              "metadata": {
+                "annotations": {
+                  "com.aixigo.preview.servant.image": "docker.io/library/mariadb:10.3.17"
+                },
+                "labels": {
+                  "com.aixigo.preview.servant.app-name": "master",
+                  "com.aixigo.preview.servant.container-type": "instance",
+                  "com.aixigo.preview.servant.service-name": "db"
+                },
+                "name": "master-db-deployment",
+                "namespace": "master"
+              },
+              "spec": {
+                "replicas": 1,
+                "selector": {
+                  "matchLabels": {
+                    "com.aixigo.preview.servant.app-name": "master",
+                    "com.aixigo.preview.servant.container-type": "instance",
+                    "com.aixigo.preview.servant.service-name": "db"
+                  }
+                },
+                "template": {
+                  "metadata": {
+                    "annotations": {
+                    },
+                    "labels": {
+                      "com.aixigo.preview.servant.app-name": "master",
+                      "com.aixigo.preview.servant.container-type": "instance",
+                      "com.aixigo.preview.servant.service-name": "db"
+                    }
+                  },
+                  "spec": {
+                    "containers": [
+                      {
+                        "image": "docker.io/library/mariadb:10.3.17",
+                        "imagePullPolicy": "Always",
+                        "name": "db",
+                        "ports": [
+                          {
+                            "containerPort": 80
+                          }
+                        ],
+                        "volumeMounts": [{
+                          "mountPath": "/var/lib/data",
+                          "name": "data-volume"
+                        }]
+                      }
+                    ],
+                    "volumes": [
+                      {
+                        "name": "data-volume",
+                        "persistentVolumeClaim": {
+                          "claimName": "master-db-pvc-abc"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            })
         );
     }
 }

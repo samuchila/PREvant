@@ -1,4 +1,9 @@
-use std::path::PathBuf;
+use std::{fmt, path::PathBuf};
+
+use serde::{
+    de::{Error, SeqAccess, Visitor},
+    Deserialize, Deserializer,
+};
 
 /*-
  * ========================LICENSE_START=================================
@@ -43,11 +48,17 @@ impl Default for Runtime {
 pub struct KubernetesRuntimeConfig {
     #[serde(default)]
     downward_api: KubernetesDownwardApiConfig,
+    #[serde(default)]
+    storage_config: KubernetesStorageConfig,
 }
 
 impl KubernetesRuntimeConfig {
     pub fn downward_api(&self) -> &KubernetesDownwardApiConfig {
         &self.downward_api
+    }
+
+    pub fn storage_config(&self) -> &KubernetesStorageConfig {
+        &self.storage_config
     }
 }
 
@@ -68,6 +79,92 @@ impl Default for KubernetesDownwardApiConfig {
         Self {
             labels_path: PathBuf::from("/run/podinfo/labels"),
         }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub enum AccessModes {
+    ReadWriteOnce,
+    ReadOnlyMany,
+    ReadWriteMany,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesStorageConfig {
+    storage_size: Option<String>,
+    storage_class: Option<String>,
+    #[serde(deserialize_with = "KubernetesStorageConfig::parse_access_modes")]
+    storage_access_modes: Vec<String>,
+}
+
+impl KubernetesStorageConfig {
+    pub fn storage_size(&self) -> &Option<String> {
+        &self.storage_size
+    }
+
+    pub fn storage_class(&self) -> &Option<String> {
+        &self.storage_class
+    }
+
+    pub fn storage_access_mode(&self) -> &Vec<String> {
+        &self.storage_access_modes
+    }
+
+    fn parse_access_modes<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct AccessModeVisitor;
+
+        impl<'de> Visitor<'de> for AccessModeVisitor {
+            type Value = Vec<String>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str(
+                    "a sequence of string or a string containing the storage access modes",
+                )
+            }
+
+            fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+                let mut access_modes = Vec::new();
+
+                match v {
+                    "ReadWriteOnce" | "ReadWriteMany" | "ReadOnly" => {
+                        access_modes.push(v.to_string())
+                    }
+                    _ => {}
+                }
+
+                if access_modes.is_empty() {
+                    access_modes.push("ReadWriteOnce".to_string());
+                }
+
+                Ok(access_modes)
+            }
+
+            fn visit_seq<V>(self, mut seq: V) -> Result<Vec<String>, V::Error>
+            where
+                V: SeqAccess<'de>,
+            {
+                let mut access_modes = Vec::new();
+
+                while let Some(mode) = seq.next_element::<String>()? {
+                    match mode.as_str() {
+                        "ReadWriteOnce" | "ReadWriteMany" | "ReadOnly" => access_modes.push(mode),
+                        _ => continue,
+                    }
+                }
+
+                if access_modes.is_empty() {
+                    access_modes.push("ReadWriteOnce".to_string());
+                }
+
+                Ok(access_modes)
+            }
+        }
+
+        deserializer.deserialize_any(AccessModeVisitor)
     }
 }
 
@@ -112,6 +209,11 @@ mod tests {
             Runtime::Kubernetes(KubernetesRuntimeConfig {
                 downward_api: KubernetesDownwardApiConfig {
                     labels_path: PathBuf::from("/some/path")
+                },
+                storage_config: KubernetesStorageConfig {
+                    storage_size: None,
+                    storage_class: None,
+                    storage_access_modes: Vec::new()
                 }
             })
         );
@@ -129,5 +231,35 @@ mod tests {
             config.downward_api.labels_path(),
             &PathBuf::from("/run/podinfo/labels")
         )
+    }
+
+    #[test]
+    fn parse_as_kubernetes_storage_config() {
+        let runtime_toml = r#"
+        type = 'Kubernetes'
+        [storageConfig]
+        storageSize = '10Gi'
+        storageClass = 'local-path'
+        storageAccessModes = ['ReadWriteOnce','ReadWriteMany']
+        "#;
+
+        let runtime = toml::de::from_str::<Runtime>(runtime_toml).unwrap();
+
+        assert_eq!(
+            runtime,
+            Runtime::Kubernetes(KubernetesRuntimeConfig {
+                downward_api: KubernetesDownwardApiConfig {
+                    labels_path: PathBuf::from("/run/podinfo/labels")
+                },
+                storage_config: KubernetesStorageConfig {
+                    storage_size: Some(String::from("10Gi")),
+                    storage_class: Some(String::from("local-path")),
+                    storage_access_modes: vec![
+                        String::from("ReadWriteOnce"),
+                        String::from("ReadWriteMany")
+                    ]
+                }
+            })
+        );
     }
 }

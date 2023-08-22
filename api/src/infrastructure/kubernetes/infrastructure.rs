@@ -25,6 +25,7 @@
  */
 use super::super::{
     APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
+    STORAGE_TYPE_LABEL,
 };
 use super::payloads::{
     deployment_payload, deployment_replicas_payload, image_pull_secret_payload,
@@ -356,93 +357,10 @@ impl KubernetesInfrastructure {
 
         let client = self.client().await?;
 
-        let attached_volumes = service.declared_volumes();
+        let persistence_volume_map = self
+            .create_persistent_volume_claim(app_name, service.declared_volumes(), service)
+            .await?;
 
-        let storage_classes: Api<StorageClass> = Api::all(self.client().await?);
-        let sc_list = storage_classes.list(&ListParams::default()).await?;
-        let default_sc = sc_list.items.into_iter().find(|sc| {
-            sc.metadata.annotations.as_ref().map_or_else(
-                || false,
-                |v| v.get("storageclass.kubernetes.io/is-default-class") == Some(&"true".into()),
-            )
-        });
-
-        let mut persistence_volume_map = BTreeMap::new();
-        if container_config.kubernetes_storage_enable() {
-            match default_sc {
-                Some(sc) => {
-                    for attached_volume in attached_volumes {
-                        let persistent_volume_claim = PersistentVolumeClaim {
-                            metadata: ObjectMeta {
-                                generate_name: Some(format!(
-                                    "{}-{}-pvc-",
-                                    app_name,
-                                    service.service_name()
-                                )),
-                                labels: Some(BTreeMap::from([
-                                    ("app_name".to_owned(), app_name.to_owned()),
-                                    ("service_name".to_owned(), service.service_name().to_owned()),
-                                ])),
-                                ..Default::default()
-                            },
-                            spec: Some(PersistentVolumeClaimSpec {
-                                storage_class_name: sc.metadata.name.clone(),
-                                access_modes: Some(vec!["ReadWriteOnce".to_owned()]),
-                                resources: Some(ResourceRequirements {
-                                    requests: Some(BTreeMap::from_iter(vec![(
-                                        "storage".to_owned(),
-                                        Quantity(
-                                            container_config.kubernetes_storage_size().to_owned(),
-                                        ),
-                                    )])),
-                                    ..Default::default()
-                                }),
-                                ..Default::default()
-                            }),
-                            ..Default::default()
-                        };
-                        match Api::namespaced(self.client().await?, app_name)
-                            .create(&PostParams::default(), &persistent_volume_claim)
-                            .await
-                        {
-                            Ok(val) => {
-                                persistence_volume_map.insert(attached_volume.as_str(), val);
-                            }
-                            Err(KubeError::Api(ErrorResponse { code, .. })) if code == 409 => {
-                                let existing_pvc: Api<PersistentVolumeClaim> =
-                                    Api::namespaced(self.client().await?, app_name);
-                                persistence_volume_map.insert(
-                                    attached_volume.as_str(),
-                                    existing_pvc
-                                        .list(&ListParams::default())
-                                        .await?
-                                        .items
-                                        .into_iter()
-                                        .find(|pvc| {
-                                            pvc.metadata
-                                                .labels
-                                                .as_ref()
-                                                .and_then(|f| {
-                                                    Some(
-                                                        f.get("app_name") == Some(app_name)
-                                                            && f.get("service_name")
-                                                                == Some(service.service_name()),
-                                                    )
-                                                })
-                                                .is_some()
-                                        })
-                                        .expect("Existing volume not found"),
-                                );
-                            }
-                            Err(e) => {
-                                error!("Cannot deploy persistent volume claim: {}", e);
-                            }
-                        }
-                    }
-                }
-                None => (),
-            }
-        }
         match Api::namespaced(client.clone(), app_name)
             .create(
                 &PostParams::default(),
@@ -576,6 +494,131 @@ impl KubernetesInfrastructure {
             .await?;
 
         Ok(service)
+    }
+
+    async fn create_persistent_volume_claim<'a>(
+        &self,
+        app_name: &String,
+        declared_volumes: &'a Vec<String>,
+        service: &DeployableService,
+    ) -> Result<BTreeMap<&'a String, PersistentVolumeClaim>, KubernetesInfrastructureError> {
+        let client = self.client().await?;
+
+        let Runtime::Kubernetes(k8s_config) = self.config.runtime_config() else {return Ok(BTreeMap::new())};
+
+        let storage_class = self.fetch_default_storage_class().await;
+        let storage_size = k8s_config.storage_config().storage_size();
+        let storage_access_mode = k8s_config.storage_config().storage_access_mode();
+        let mut persistent_volume_map = BTreeMap::new();
+        let existing_pvc: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), app_name);
+
+        if storage_class.is_none() {
+            return Ok(BTreeMap::new());
+        }
+
+        for declared_volume in declared_volumes {
+            let pvc_list_params = ListParams {
+                label_selector: Some(format!(
+                    "{}={},{}={},{}={}",
+                    APP_NAME_LABEL,
+                    app_name,
+                    SERVICE_NAME_LABEL,
+                    service.service_name(),
+                    STORAGE_TYPE_LABEL,
+                    declared_volume.split('/').last().unwrap_or("default")
+                )),
+                ..Default::default()
+            };
+            let fetched_pvc = existing_pvc.list(&pvc_list_params).await?.items;
+            if fetched_pvc.is_empty() {
+                let persistent_volume_claim = PersistentVolumeClaim {
+                    metadata: ObjectMeta {
+                        generate_name: Some(format!(
+                            "{}-{}-pvc-",
+                            app_name,
+                            service.service_name()
+                        )),
+                        labels: Some(BTreeMap::from([
+                            (APP_NAME_LABEL.to_owned(), app_name.to_owned()),
+                            (
+                                SERVICE_NAME_LABEL.to_owned(),
+                                service.service_name().to_owned(),
+                            ),
+                            (
+                                STORAGE_TYPE_LABEL.to_owned(),
+                                declared_volume
+                                    .split('/')
+                                    .last()
+                                    .unwrap_or("default")
+                                    .to_owned(),
+                            ),
+                        ])),
+                        ..Default::default()
+                    },
+                    spec: Some(PersistentVolumeClaimSpec {
+                        storage_class_name: storage_class.to_owned(),
+                        access_modes: Some(storage_access_mode.to_owned()),
+                        resources: Some(ResourceRequirements {
+                            requests: Some(BTreeMap::from_iter(vec![(
+                                "storage".to_owned(),
+                                Quantity(
+                                    storage_size.to_owned().unwrap_or_else(|| "2Gi".to_owned()),
+                                ),
+                            )])),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
+
+                match Api::namespaced(client.clone(), app_name)
+                    .create(&PostParams::default(), &persistent_volume_claim)
+                    .await
+                {
+                    Ok(pvc) => {
+                        persistent_volume_map.insert(declared_volume, pvc);
+                    }
+                    Err(e) => {
+                        error!("Cannot deploy persistent volume claim: {}", e);
+                    }
+                }
+            } else {
+                for pvc in fetched_pvc {
+                    persistent_volume_map.insert(declared_volume, pvc);
+                }
+            }
+        }
+        Ok(persistent_volume_map)
+    }
+
+    async fn fetch_default_storage_class(&self) -> Option<String> {
+        let Runtime::Kubernetes(k8s_config) = self.config.runtime_config() else {return None;};
+        if let Some(sc) = k8s_config.storage_config().storage_class() {
+            return Some(sc.into());
+        }
+
+        let storage_classes: Api<StorageClass> = Api::all(match self.client().await {
+            Ok(client) => client,
+            Err(_) => return None,
+        });
+
+        let default_sc = match storage_classes.list(&ListParams::default()).await {
+            Ok(sc_list) => sc_list.items.into_iter().find(|sc| {
+                sc.metadata.annotations.as_ref().map_or_else(
+                    || false,
+                    |v| {
+                        v.get("storageclass.kubernetes.io/is-default-class") == Some(&"true".into())
+                    },
+                )
+            }),
+            Err(_) => None,
+        };
+
+        match default_sc {
+            Some(sc) => sc.metadata.name,
+            None => None,
+        }
     }
 }
 

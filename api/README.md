@@ -17,6 +17,23 @@ type = 'Kubernetes'
 # This information is crucial if you run PREvant behind a Traefik instance that enforces the user ot be
 # logged in.
 labelsPath = '/run/podinfo/labels'
+
+[runtime.storageConfig]
+# Size of the storage space that is reserved and mounted to the deployed companion with storage.
+# Use number followed by K, M, G for decimal (1000-based) or Ki, Mi, Gi for binary (1024-based).
+# Equivalents in Megabytes(MB) : 2M = 2MB, 2Mi = 2.048 MB; 1G = 1000MB, 1Gi = 1024MB
+# Default value is 2Gi
+storageSize = '10Gi'
+# Storage class denotes the type of storage to be used for companions deployed with storage.
+# Manually managed storage classes can be specified here.
+# To use the default storage class (Local Path Provisioner for K3s) leave the property blank.
+storageClass = 'local-path'
+# Read and Write permissions for the storage mount.
+# It can be a single string or a sequence of the following : ReadWriteOnce, ReadWriteMany, ReadOnly
+# Default value is ReadWriteOnce
+storageAccessModes = ['ReadWriteOnce','ReadWriteMany']
+OR
+storageAccessModes = 'ReadWriteOnce'
 ```
 
 ## Container Options
