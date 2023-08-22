@@ -82,13 +82,6 @@ impl Default for KubernetesDownwardApiConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-pub enum AccessModes {
-    ReadWriteOnce,
-    ReadOnlyMany,
-    ReadWriteMany,
-}
-
 #[derive(Clone, Debug, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct KubernetesStorageConfig {
