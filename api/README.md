@@ -32,7 +32,7 @@ storageClass = 'local-path'
 # It can be a single string or a sequence of the following : ReadWriteOnce, ReadWriteMany, ReadOnly
 # Default value is ReadWriteOnce
 storageAccessModes = ['ReadWriteOnce','ReadWriteMany']
-OR
+#OR
 storageAccessModes = 'ReadWriteOnce'
 ```
 
