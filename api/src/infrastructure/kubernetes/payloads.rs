@@ -55,7 +55,7 @@ use schemars::JsonSchema;
 use secstr::SecUtf8;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::iter::FromIterator;
 use std::path::{Component, PathBuf};
@@ -177,7 +177,7 @@ pub fn deployment_payload(
     service: &DeployableService,
     container_config: &ContainerConfig,
     use_image_pull_secret: bool,
-    persitent_volume_map: &BTreeMap<&String, PersistentVolumeClaim>,
+    persitent_volume_map: &HashMap<&String, PersistentVolumeClaim>,
 ) -> V1Deployment {
     let env = service.env().map(|env| {
         env.iter()
@@ -682,7 +682,7 @@ mod tests {
             ),
             &ContainerConfig::default(),
             false,
-            &BTreeMap::new(),
+            &HashMap::new(),
         );
 
         assert_json_diff::assert_json_include!(
@@ -761,7 +761,7 @@ mod tests {
             ),
             &ContainerConfig::default(),
             false,
-            &BTreeMap::new(),
+            &HashMap::new(),
         );
 
         assert_json_diff::assert_json_include!(
@@ -843,7 +843,7 @@ mod tests {
             ),
             &ContainerConfig::default(),
             false,
-            &BTreeMap::new(),
+            &HashMap::new(),
         );
 
         assert_json_diff::assert_json_include!(
@@ -1029,7 +1029,7 @@ mod tests {
             ),
             &ContainerConfig::default(),
             false,
-            &BTreeMap::from([(&String::from("/var/lib/data"), persistent_volume_claim)]),
+            &HashMap::from([(&String::from("/var/lib/data"), persistent_volume_claim)]),
         );
 
         assert_json_diff::assert_json_include!(

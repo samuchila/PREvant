@@ -28,12 +28,6 @@ storageSize = '10Gi'
 # Manually managed storage classes can be specified here.
 # To use the default storage class (Local Path Provisioner for K3s) leave the property blank.
 storageClass = 'local-path'
-# Read and Write permissions for the storage mount.
-# It can be a single string or a sequence of the following : ReadWriteOnce, ReadWriteMany, ReadOnly
-# Default value is ReadWriteOnce
-storageAccessModes = ['ReadWriteOnce','ReadWriteMany']
-#OR
-storageAccessModes = 'ReadWriteOnce'
 ```
 
 ## Container Options

@@ -255,17 +255,17 @@ mod tests {
         let blob = serde_json::from_str::<ImageBlob>(
             r#"{
                  "config": {
-                     "Hostname": "837a64dcc771",
-                     "Domainname": "",
-                     "User": "",
-                     "AttachStdin": false,
-                     "AttachStdout": false,
-                     "AttachStderr": false,
-                     "ExposedPorts": {
-                       "8080/tcp": {},
-                       "9080/udp": {}
-                     }
-                 } }"#,
+                    "Hostname": "837a64dcc771",
+                    "Domainname": "",
+                    "User": "",
+                    "AttachStdin": false,
+                    "AttachStdout": false,
+                    "AttachStderr": false,
+                    "ExposedPorts": {
+                      "8080/tcp": {},
+                      "9080/udp": {}
+                    }
+                } }"#,
         )
         .unwrap();
 
@@ -277,13 +277,13 @@ mod tests {
         let blob = serde_json::from_str::<ImageBlob>(
             r#"{
                  "config": {
-                     "Hostname": "837a64dcc771",
-                     "Domainname": "",
-                     "User": "",
-                     "AttachStdin": false,
-                     "AttachStdout": false,
-                     "AttachStderr": false
-                 } }"#,
+                    "Hostname": "837a64dcc771",
+                    "Domainname": "",
+                    "User": "",
+                    "AttachStdin": false,
+                    "AttachStdout": false,
+                    "AttachStderr": false
+                } }"#,
         )
         .unwrap();
 
