@@ -5,7 +5,7 @@ name: Build and test API
 jobs:
   unitTest:
     name: API Unit Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@master
 
