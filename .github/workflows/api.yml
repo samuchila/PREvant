@@ -5,7 +5,7 @@ name: Build and test API
 jobs:
   unitTest:
     name: API Unit Tests
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@master
 
@@ -26,6 +26,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@master
+
+      - name: Update dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y libssl-dev
 
       - name: Build Docker Image
         run: docker build --pull -t aixigo/prevant .
