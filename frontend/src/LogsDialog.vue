@@ -26,9 +26,11 @@
 <template>
    <dlg ref="dialog" :title="`Logs of ${$route.params.service} in ${$route.params.app}`" :large="true" @close="clearLogs">
       <template v-slot:body>
-         <DynamicScroller :items="logLines" :item-size="20" class="ra-logs">
+         <DynamicScroller ref="scroller" :items="logLines" :min-item-size="24" class="ra-logs" :emit-update="true"
+            @resize="scrollBottom" @scroll-end="handleEndScroll">
             <template v-slot="{ item, index, active }">
-               <DynamicScrollerItem :item="item" :active="active" :size-dependencies="[ item.line ]" :data-index="index">
+               <DynamicScrollerItem :item="item" :active="index === item.id" :size-dependencies="[item.line,]"
+                  :data-index="item.id" :data-active="active">
                   <div class="ra-log-line" :key="item.id">
                      {{ item.line }}
                   </div>
@@ -40,119 +42,200 @@
 </template>
 
 <style>
-   @import 'vue-virtual-scroller/dist/vue-virtual-scroller.css';
+@import 'vue-virtual-scroller/dist/vue-virtual-scroller.css';
 
-   .ra-logs {
-      height: 80vh;
-      overflow: auto;
+.ra-logs {
+   height: 80vh;
+   overflow-y: auto;
+   background-color: black;
+   color: white;
+   font-family: var(--font-family-monospace);
+   padding: 0.5rem;
+}
 
-      background-color: black;
-      color: white;
-      font-family: var(--font-family-monospace);
-
-      padding: 0.5rem;
-   }
-
-   .ra-log-line {
-      white-space: nowrap;
-      height: 20px;
-   }
+.ra-log-line {
+   margin-bottom: 5px;
+   padding: 5px;
+   white-space: nowrap;
+   word-wrap: break-word;
+}
 </style>
 
 <script>
-   import Dialog from './Dialog.vue';
-   import parseLinkHeader from 'parse-link-header';
-   import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller'
+import parseLinkHeader from 'parse-link-header';
+import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller';
+import Dialog from './Dialog.vue';
 
-   let requestUri;
+let requestUri;
 
-   export default {
-      data() {
-         return {
-            logLines: [],
-            nextPageLink: null
+export default {
+   data() {
+      return {
+         logLines: [],
+         nextPageLink: null,
+         since: '',
+         limit: 2000,
+         eventSource: null,
+         scrollPosition: 0,
+
+      };
+   },
+   components: {
+      'dlg': Dialog,
+      'DynamicScrollerItem': DynamicScrollerItem,
+      'DynamicScroller': DynamicScroller
+   },
+   watch: {
+      currentPageLink(newCurrentPageLink) {
+         this.logLines = [];
+         this.fetchLogs(newCurrentPageLink);
+      }
+   },
+   computed: {
+      currentPageLink() {
+         return `/api/apps/${this.$route.params.app}/logs/${this.$route.params.service}`;
+      },
+      filteredPageLink() {
+         let queryString = '';
+         queryString += this.since ? `since=${this.since}:00-00:00` : '';
+         if (this.limit > 0) {
+            queryString += queryString.length > 0 ? '&' : '';
+            queryString += `limit=${this.limit}`;
+         }
+
+         return this.currentPageLink + (queryString ? `?${queryString}` : '');
+      }
+   },
+   mounted() {
+      this.fetchLogs(this.currentPageLink);
+
+   },
+   beforeDestroy() {
+      if (this.eventSource) {
+         this.eventSource.close();
+      }
+   },
+   methods: {
+      fetchLogs(newRequestUri) {
+         if (newRequestUri == null || requestUri != null) {
+            return;
+         }
+
+         requestUri = newRequestUri;
+         this.eventSource = new EventSource(requestUri);
+         this.eventSource.onopen = () => {
+            this.$refs.dialog.open();
+            console.log("Connection to server opened.");
          };
-      },
-      components: {
-         'dlg': Dialog,
-         'DynamicScrollerItem': DynamicScrollerItem,
-         'DynamicScroller': DynamicScroller
-      },
-      watch: {
-         currentPageLink(newCurrentPageLink) {
-            this.logLines = [];
-            this.fetchLogs( newCurrentPageLink );
-         }
-      },
-      computed: {
-         currentPageLink() {
-            return `/api/apps/${this.$route.params.app}/logs/${this.$route.params.service}`;
-         }
-      },
-      mounted() {
-         this.fetchLogs( this.currentPageLink );
-         this.$refs.dialog.open();
-      },
-      methods: {
-         fetchLogs( newRequestUri ) {
-            if ( newRequestUri == null || requestUri != null ) {
-               return;
+
+
+         this.eventSource.addEventListener("message", (e) => {
+            const linesSplit = e.data.split('\n');
+            this.logLines = this.logLines.concat(
+               linesSplit
+                  .filter((line, index) => index < linesSplit.length - 1)
+                  .map((line, index) => ({ id: linesSplit.length - index, line }))
+            );
+         });
+         this.eventSource.addEventListener("line", (e) => {
+            this.logLines.push({ id: this.logLines.length + 1, line: e.data });
+
+            if (this.isCloseToBottom()) {
+               this.$nextTick(() => {
+                  this.scrollBottom();
+               });
             }
+         });
 
-            requestUri = newRequestUri;
+         this.eventSource.onerror = function () {
+            console.log("EventSource failed.");
+         };
 
-            fetch( requestUri )
-               .then( parseLogsResponse )
-               .then( ( { logLines, rel } ) => {
-                     requestUri = null;
-                     this.nextPageLink = rel.uri;
 
-                     const linesSplit = logLines.split( '\n' );
-                     this.logLines = this.logLines.concat(
-                        linesSplit
-                           .filter( ( line, index ) => index < linesSplit.length - 1 )
-                           .map( ( line, index ) => ( { id: index, line } ) )
-                     );
-                  }
-               )
-               .catch( () => {
-                  requestUri = null;
-               } )
-         },
+      },
 
-         clearLogs() {
-            this.currentPageLink = null;
+      isCloseToBottom() {
+         const el = this.$refs.scroller.$el;
+         const distanceFromBottom = el.scrollHeight - (el.scrollTop + el.clientHeight);
+         const minItemSize = 24;
+         return distanceFromBottom < minItemSize;
+      },
+
+      clearLogs() {
+         this.currentPageLink = null;
+         this.nextPageLink = null;
+         this.logLines = [];
+
+         this.$router.push('/');
+      },
+
+      scrollBottom() {
+         this.$refs.scroller.scrollToBottom();
+      },
+
+      sendRequest() {
+         console.log('Sending request with:', this.since, this.limit);
+         this.fetchLogs(this.filteredPageLink);
+      },
+
+      handleEndScroll() {
+         console.log("Scroller at the bottom");
+      },
+
+      processDownload() {
+
+         fetch(this.filteredPageLink)
+            .then(parseLogsResponse)
+            .then(({ logLines, rel }) => {
+               const blob = new Blob([logLines], { type: 'text/plain' });
+               const url = window.URL.createObjectURL(blob);
+
+               const filename = `${this.$route.params.app}_${this.$route.params.service}_${new Date().toISOString()}.txt`;
+               const link = document.createElement('a');
+               link.href = url;
+               link.download = filename;
+               document.body.appendChild(link);
+               link.click();
+
+               document.body.removeChild(link);
+               window.URL.revokeObjectURL(url);
+            }
+            )
+            .catch(() => {
+               console.error('Unable to fetch logs for download')
+            });
+
+      },
+
+      updateLogs() {
+         if (this.nextPageLink) {
+            const nextPageLink = this.nextPageLink;
             this.nextPageLink = null;
-            this.logLines = [];
+            this.currentPageLink = nextPageLink;
+         }
+      },
+      sendToBottom() {
+         this.scrollBottom();
+      }
 
-            this.$router.push('/');
-         },
+   }
+}
 
-         updateLogs() {
-            if ( this.nextPageLink ) {
-               const nextPageLink = this.nextPageLink;
-               this.nextPageLink = null;
-               this.currentPageLink = nextPageLink;
-            }
+function parseLogsResponse(response) {
+   return new Promise((resolve, reject) => {
+      if (!response.ok) {
+         return reject(response);
+      }
+
+      const link = response.headers.get('Link');
+      let rel = null;
+      if (link != null) {
+         const linkHeader = parseLinkHeader(link);
+         if (linkHeader.next != null) {
+            rel = linkHeader.next.url;
          }
       }
-   }
-
-   function parseLogsResponse( response ) {
-      return new Promise( ( resolve, reject ) => {
-         if ( !response.ok ) {
-            return reject( response );
-         }
-
-         const link = response.headers.get( 'Link' );
-         let rel = null;
-         if ( link != null ) {
-            const linkHeader = parseLinkHeader( link );
-            if ( linkHeader.next != null ) {
-               rel = linkHeader.next.url;
-            }
-         }
-         return resolve( response.text().then( text => ( { logLines: text, rel } ) ) );
-      } );
-   }
+      return resolve(response.text().then(text => ({ logLines: text, rel })));
+   });
+}
 </script>

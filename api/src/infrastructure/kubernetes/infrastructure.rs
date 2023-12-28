@@ -35,13 +35,14 @@ use super::payloads::{
 use crate::config::{Config as PREvantConfig, ContainerConfig, Runtime};
 use crate::deployment::deployment_unit::{DeployableService, DeploymentUnit};
 use crate::infrastructure::traefik::TraefikIngressRoute;
-use crate::infrastructure::Infrastructure;
+use crate::infrastructure::{Infrastructure, LogEvents};
 use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus};
 use crate::models::{Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig};
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
 use failure::Error;
 use futures::future::join_all;
+use futures::Stream;
 use k8s_openapi::api::storage::v1::StorageClass;
 use k8s_openapi::api::{
     apps::v1::Deployment as V1Deployment, core::v1::Namespace as V1Namespace,
@@ -56,11 +57,13 @@ use kube::{
 };
 use log::{debug, warn};
 use multimap::MultiMap;
+use rocket::response::stream::stream;
 use secstr::SecUtf8;
 use std::collections::{BTreeMap, HashMap};
 use std::convert::{From, TryFrom};
 use std::net::IpAddr;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::str::FromStr;
 
 pub struct KubernetesInfrastructure {
@@ -682,78 +685,18 @@ impl Infrastructure for KubernetesInfrastructure {
         Ok(services)
     }
 
-    async fn get_logs(
-        &self,
-        app_name: &String,
-        service_name: &String,
-        from: &Option<DateTime<FixedOffset>>,
+    fn get_logs<'a>(
+        &'a self,
+        app_name: &'a String,
+        service_name: &'a String,
+        from: &'a Option<DateTime<FixedOffset>>,
         limit: usize,
-    ) -> Result<Option<Vec<(DateTime<FixedOffset>, String)>>, Error> {
-        let p = ListParams {
-            label_selector: Some(format!(
-                "{}={},{}={}",
-                APP_NAME_LABEL, app_name, SERVICE_NAME_LABEL, service_name,
-            )),
-            ..Default::default()
-        };
-        let pod = match Api::<V1Pod>::namespaced(self.client().await?, app_name)
-            .list(&p)
-            .await?
-            .into_iter()
-            .next()
-        {
-            Some(pod) => pod,
-            None => {
-                return Ok(None);
-            }
-        };
-
-        let p = LogParams {
-            timestamps: true,
-            since_seconds: from
-                .map(|from| {
-                    from.timestamp()
-                        - pod
-                            .status
-                            .as_ref()
-                            .unwrap()
-                            .start_time
-                            .as_ref()
-                            .unwrap()
-                            .0
-                            .timestamp()
-                })
-                .filter(|since_seconds| since_seconds > &0),
-            ..Default::default()
-        };
-
-        let logs = Api::<V1Pod>::namespaced(self.client().await?, app_name)
-            .logs(&pod.metadata.name.unwrap(), &p)
-            .await?;
-
-        let logs = logs
-            .split('\n')
-            .enumerate()
-            // Unfortunately,  API does not support head (also like docker, cf. https://github.com/moby/moby/issues/13096)
-            // Until then we have to skip these log messages which is super slow…
-            .filter(move |(index, _)| index < &limit)
-            .filter(|(_, line)| !line.is_empty())
-            .map(|(_, line)| {
-                let mut iter = line.splitn(2, ' ');
-                let timestamp = iter.next().expect(
-                    "This should never happen: kubernetes should return timestamps, separated by space",
-                );
-
-                let datetime =
-                    DateTime::parse_from_rfc3339(timestamp).expect("Expecting a valid timestamp");
-
-                let mut log_line: String = iter.collect::<Vec<&str>>().join(" ");
-                log_line.push('\n');
-                (datetime, log_line)
-            })
-            .collect();
-
-        Ok(Some(logs))
+    ) -> Pin<Box<dyn Stream<Item = Result<LogEvents, failure::Error>> + Send + 'a>> {
+        Box::pin(stream! {
+                yield Ok(LogEvents::Message(format!("{} Log msg 1 of {} of app {}\n",DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z").unwrap(), service_name, app_name)));
+                yield Ok(LogEvents::Message(format!("{} Log msg 1 of {} of app {}\n",DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z").unwrap(), service_name, app_name)));
+                yield Ok(LogEvents::Message(format!("{} Log msg 1 of {} of app {}\n",DateTime::parse_from_rfc3339("2019-07-18T07:35:00.000000000Z").unwrap(), service_name, app_name)));
+        })
     }
 
     async fn change_status(

@@ -29,15 +29,18 @@ use crate::deployment::deployment_unit::DeployableService;
 use crate::deployment::DeploymentUnit;
 use crate::infrastructure::Infrastructure;
 use crate::models::service::{Service, ServiceStatus};
-use crate::models::{ServiceBuilder, ServiceConfig};
+use crate::models::{LogChunk, ServiceBuilder, ServiceConfig};
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
+use futures::Stream;
 use multimap::MultiMap;
+use rocket::response::stream::stream;
 use std::collections::HashSet;
+use std::pin::Pin;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use super::TraefikIngressRoute;
+use super::{LogEvents, TraefikIngressRoute};
 
 #[cfg(test)]
 pub struct DummyInfrastructure {
@@ -176,27 +179,32 @@ impl Infrastructure for DummyInfrastructure {
         }
     }
 
-    async fn get_logs(
-        &self,
-        app_name: &String,
-        service_name: &String,
-        _from: &Option<DateTime<FixedOffset>>,
+    fn get_logs<'a>(
+        &'a self,
+        app_name: &'a String,
+        service_name: &'a String,
+        _from: &'a Option<DateTime<FixedOffset>>,
         _limit: usize,
-    ) -> Result<Option<Vec<(DateTime<FixedOffset>, String)>>, failure::Error> {
-        Ok(Some(vec![
-            (
-                DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z").unwrap(),
-                format!("Log msg 1 of {} of app {}\n", service_name, app_name),
-            ),
-            (
-                DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z").unwrap(),
-                format!("Log msg 2 of {} of app {}\n", service_name, app_name),
-            ),
-            (
-                DateTime::parse_from_rfc3339("2019-07-18T07:35:00.000000000Z").unwrap(),
-                format!("Log msg 3 of {} of app {}\n", service_name, app_name),
-            ),
-        ]))
+    ) -> Pin<Box<dyn Stream<Item = Result<LogEvents, failure::Error>> + Send + 'a>> {
+        Box::pin(stream! {
+            let logs = vec![
+                                (
+                                    DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z").unwrap(),
+                                    format!("Log msg 1 of {} of app {}\n", service_name, app_name),
+                                ),
+                                (
+                                    DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z").unwrap(),
+                                    format!("Log msg 2 of {} of app {}\n", service_name, app_name),
+                                ),
+                                (
+                                    DateTime::parse_from_rfc3339("2019-07-18T07:35:00.000000000Z").unwrap(),
+                                    format!("Log msg 3 of {} of app {}\n", service_name, app_name),
+                                ),
+                            ];
+                            let chunk = LogChunk::from(logs);
+                            yield Ok(LogEvents::Message(chunk));
+
+        })
     }
 
     async fn change_status(

@@ -24,7 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::models::Environment;
+use crate::models::{Environment, LogChunk};
 pub use docker::DockerInfrastructure as Docker;
 #[cfg(test)]
 pub use dummy_infrastructure::DummyInfrastructure as Dummy;
@@ -52,6 +52,11 @@ static STORAGE_TYPE_LABEL: &str = "com.aixigo.preview.servant.storage-type";
 /// must be replicated, into a JSON object. This function should be used by implementations
 /// to serialize the environment variable so that it can be deserialized when service configurations
 /// will be cloned from a running service.
+
+pub enum LogEvents {
+    Message(LogChunk),
+    Line(String),
+}
 fn replicated_environment_variable_to_json(env: &Environment) -> Option<Value> {
     let replicated_env = env
         .iter()

@@ -24,7 +24,10 @@
  * =========================LICENSE_END==================================
  */
 
+use std::pin::Pin;
+
 use super::traefik::TraefikIngressRoute;
+use super::LogEvents;
 use crate::config::ContainerConfig;
 use crate::deployment::DeploymentUnit;
 use crate::models::service::{Service, ServiceStatus};
@@ -32,6 +35,7 @@ use crate::models::{ContainerType, ServiceConfig};
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
 use failure::Error;
+use futures::Stream;
 use multimap::MultiMap;
 
 #[async_trait]
@@ -69,13 +73,13 @@ pub trait Infrastructure: Send + Sync {
     ) -> Result<Vec<Service>, Error>;
 
     /// Returns the log lines with a the corresponding timestamps in it.
-    async fn get_logs(
-        &self,
-        app_name: &String,
-        service_name: &String,
-        from: &Option<DateTime<FixedOffset>>,
+    fn get_logs<'a>(
+        &'a self,
+        app_name: &'a String,
+        service_name: &'a String,
+        from: &'a Option<DateTime<FixedOffset>>,
         limit: usize,
-    ) -> Result<Option<Vec<(DateTime<FixedOffset>, String)>>, Error>;
+    ) -> Pin<Box<dyn Stream<Item = Result<LogEvents, failure::Error>> + Send + 'a>>;
 
     /// Changes the status of a service, for example, the service might me stopped or started.
     async fn change_status(

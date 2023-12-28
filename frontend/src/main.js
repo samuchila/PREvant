@@ -26,31 +26,31 @@
 import 'current-script-polyfill';
 
 // Bootstrap material design library
-import $ from 'jquery/dist/jquery.js';
-import 'popper.js';
 import 'bootstrap-material-design/dist/css/bootstrap-material-design.css';
 import 'bootstrap-material-design/dist/js/bootstrap-material-design.js';
+import $ from 'jquery/dist/jquery.js';
+import 'popper.js';
 
 $(document).ready(() => {
-     $('body').bootstrapMaterialDesign();
+   $('body').bootstrapMaterialDesign();
 });
 
-import { Vue, createApp, configureCompat } from 'vue';
+import { configureCompat, createApp } from 'vue';
 import { createRouter, createWebHashHistory } from 'vue-router';
 
 configureCompat({
-  RENDER_FUNCTION: false,
+   RENDER_FUNCTION: false,
 })
 
-import './scss/theme.scss';
 import App from './App.vue';
+import LogsDialog from './LogsDialog.vue';
 import Navbar from './Navbar.vue';
 import OpenApiUI from './OpenApiUI.vue';
-import LogsDialog from './LogsDialog.vue';
+import './scss/theme.scss';
 
-import {library} from '@fortawesome/fontawesome-svg-core';
-import {faClipboard, faCode, faCopy, faServer, faSpinner, faTerminal, faTrash, faWindowClose} from '@fortawesome/free-solid-svg-icons';
-import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome';
+import { library } from '@fortawesome/fontawesome-svg-core';
+import { faArrowDown, faClipboard, faCode, faCopy, faDownload, faRedoAlt, faServer, faSpinner, faTerminal, faTrash, faWindowClose } from '@fortawesome/free-solid-svg-icons';
+import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome';
 import store from './store';
 
 library.add(faClipboard);
@@ -61,6 +61,9 @@ library.add(faSpinner);
 library.add(faTerminal);
 library.add(faTrash);
 library.add(faWindowClose);
+library.add(faDownload);
+library.add(faRedoAlt);
+library.add(faArrowDown);
 
 store.dispatch('fetchData');
 
