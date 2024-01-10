@@ -333,7 +333,7 @@ pub fn deployment_payload(
                         env,
                         volume_mounts,
                         ports: Some(vec![ContainerPort {
-                            container_port: service.port() as i32,
+                            container_port: 80,
                             ..Default::default()
                         }]),
                         resources,

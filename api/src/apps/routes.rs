@@ -34,7 +34,6 @@ use crate::models::ServiceConfig;
 use crate::models::{AppName, AppNameError, LogChunk};
 use crate::models::{AppStatusChangeId, AppStatusChangeIdError};
 use chrono::DateTime;
-use futures::Stream;
 use futures::StreamExt;
 use http_api_problem::{HttpApiProblem, StatusCode};
 use multimap::MultiMap;
@@ -58,7 +57,8 @@ pub fn apps_routes() -> Vec<rocket::Route> {
         create_app,
         logs,
         change_status,
-        status_change
+        status_change,
+        stream_logs
     ]
 }
 
@@ -182,24 +182,63 @@ async fn change_status(
 
 #[get(
     "/<app_name>/logs/<service_name>?<since>&<limit>",
-    format = "text/event-stream"
+    format = "text/plain",
+    rank = 2
 )]
-async fn logs<'a>(
+async fn logs(
     app_name: Result<AppName, AppNameError>,
     service_name: String,
     since: Option<String>,
     limit: Option<usize>,
+    apps: &State<Arc<Apps>>,
+) -> HttpResult<LogsResponse> {
+    let app_name = app_name?;
+
+    let since = match since {
+        None => None,
+        Some(since) => match DateTime::parse_from_rfc3339(&since) {
+            Ok(since) => Some(since),
+            Err(err) => {
+                return Err(
+                    HttpApiProblem::with_title(http_api_problem::StatusCode::BAD_REQUEST)
+                        .detail(format!("{}", err))
+                        .into(),
+                );
+            }
+        },
+    };
+    let limit = limit.unwrap_or(20_000);
+
+    let log_chunk = apps
+        .get_logs(&app_name, &service_name, &since, limit)
+        .await?;
+
+    Ok(LogsResponse {
+        log_chunk,
+        app_name,
+        service_name,
+        limit,
+    })
+}
+
+#[get(
+    "/<app_name>/logs/<service_name>?<limit>",
+    format = "text/event-stream",
+    rank = 3
+)]
+async fn stream_logs<'a>(
+    app_name: Result<AppName, AppNameError>,
+    service_name: String,
+    limit: Option<usize>,
     apps: &'a State<Arc<Apps>>,
 ) -> EventStream![Event + 'a] {
     let app_name = app_name.unwrap();
-    let since = None;
     let limit = limit.unwrap_or(20_000);
-    let apps_ref = apps.clone();
 
     EventStream! {
         let mut log_chunk = Box::pin(
-            apps_ref
-                .get_logs(&app_name, &service_name, &since, limit)
+            apps
+                .stream_logs(&app_name, &service_name, limit)
                 .await,
         );
         while let Some(result) = log_chunk.as_mut().next().await {

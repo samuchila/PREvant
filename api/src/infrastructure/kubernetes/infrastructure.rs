@@ -37,12 +37,15 @@ use crate::deployment::deployment_unit::{DeployableService, DeploymentUnit};
 use crate::infrastructure::traefik::TraefikIngressRoute;
 use crate::infrastructure::{Infrastructure, LogEvents};
 use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus};
-use crate::models::{Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig};
+use crate::models::{
+    Environment, Image, LogChunk, ServiceBuilder, ServiceBuilderError, ServiceConfig,
+};
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
 use failure::Error;
 use futures::future::join_all;
-use futures::Stream;
+use futures::stream::BoxStream;
+use futures::{AsyncBufReadExt, TryStreamExt};
 use k8s_openapi::api::storage::v1::StorageClass;
 use k8s_openapi::api::{
     apps::v1::Deployment as V1Deployment, core::v1::Namespace as V1Namespace,
@@ -60,10 +63,9 @@ use multimap::MultiMap;
 use rocket::response::stream::stream;
 use secstr::SecUtf8;
 use std::collections::{BTreeMap, HashMap};
-use std::convert::{From, TryFrom};
+use std::convert::{From, TryFrom, TryInto};
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::str::FromStr;
 
 pub struct KubernetesInfrastructure {
@@ -504,7 +506,9 @@ impl KubernetesInfrastructure {
     ) -> Result<Option<HashMap<&'a String, PersistentVolumeClaim>>, KubernetesInfrastructureError>
     {
         let client = self.client().await?;
-        let Runtime::Kubernetes(k8s_config) = self.config.runtime_config() else {return Ok(None)};
+        let Runtime::Kubernetes(k8s_config) = self.config.runtime_config() else {
+            return Ok(None);
+        };
 
         let storage_size = k8s_config.storage_config().storage_size();
         let storage_class = match k8s_config.storage_config().storage_class() {
@@ -685,17 +689,157 @@ impl Infrastructure for KubernetesInfrastructure {
         Ok(services)
     }
 
-    fn get_logs<'a>(
+    async fn get_logs(
+        &self,
+        app_name: &String,
+        service_name: &String,
+        from: &Option<DateTime<FixedOffset>>,
+        limit: usize,
+    ) -> Result<Option<Vec<(DateTime<FixedOffset>, String)>>, Error> {
+        let p = ListParams {
+            label_selector: Some(format!(
+                "{}={},{}={}",
+                APP_NAME_LABEL, app_name, SERVICE_NAME_LABEL, service_name,
+            )),
+            ..Default::default()
+        };
+        let pod = match Api::<V1Pod>::namespaced(self.client().await?, app_name)
+            .list(&p)
+            .await?
+            .into_iter()
+            .next()
+        {
+            Some(pod) => pod,
+            None => {
+                return Ok(None);
+            }
+        };
+        info!("From val is {:?} and Limit is {}", &from, &limit);
+        let p = LogParams {
+            timestamps: true,
+            since_seconds: from
+                .map(|from| {
+                    from.timestamp()
+                        - pod
+                            .status
+                            .as_ref()
+                            .unwrap()
+                            .start_time
+                            .as_ref()
+                            .unwrap()
+                            .0
+                            .timestamp()
+                })
+                .filter(|since_seconds| since_seconds > &0),
+            tail_lines: Some(limit.try_into().unwrap()),
+            ..Default::default()
+        };
+
+        let logs = Api::<V1Pod>::namespaced(self.client().await?, app_name)
+            .logs(&pod.metadata.name.unwrap(), &p)
+            .await?;
+
+        let logs = logs
+            .split('\n')
+            .enumerate()
+            // Unfortunately,  API does not support head (also like docker, cf. https://github.com/moby/moby/issues/13096)
+            // Until then we have to skip these log messages which is super slow…
+            .filter(move |(index, _)| index < &limit)
+            .filter(|(_, line)| !line.is_empty())
+            .map(|(_, line)| {
+                let mut iter = line.splitn(2, ' ');
+                let timestamp = iter.next().expect(
+                    "This should never happen: kubernetes should return timestamps, separated by space",
+                );
+
+                let datetime =
+                    DateTime::parse_from_rfc3339(timestamp).expect("Expecting a valid timestamp");
+
+                let mut log_line: String = iter.collect::<Vec<&str>>().join(" ");
+                log_line.push('\n');
+                (datetime, log_line)
+            })
+            .collect::<Vec<(DateTime<FixedOffset>, String)>>();
+        info!("Length of logs sent is {}", &logs.len());
+        Ok(Some(logs))
+    }
+
+    fn stream_logs<'a>(
         &'a self,
         app_name: &'a String,
         service_name: &'a String,
-        from: &'a Option<DateTime<FixedOffset>>,
         limit: usize,
-    ) -> Pin<Box<dyn Stream<Item = Result<LogEvents, failure::Error>> + Send + 'a>> {
+    ) -> BoxStream<'a, Result<LogEvents, failure::Error>> {
         Box::pin(stream! {
-                yield Ok(LogEvents::Message(format!("{} Log msg 1 of {} of app {}\n",DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z").unwrap(), service_name, app_name)));
-                yield Ok(LogEvents::Message(format!("{} Log msg 1 of {} of app {}\n",DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z").unwrap(), service_name, app_name)));
-                yield Ok(LogEvents::Message(format!("{} Log msg 1 of {} of app {}\n",DateTime::parse_from_rfc3339("2019-07-18T07:35:00.000000000Z").unwrap(), service_name, app_name)));
+                let p = ListParams {
+                label_selector: Some(format!(
+                    "{}={},{}={}",
+                    APP_NAME_LABEL, app_name, SERVICE_NAME_LABEL, service_name,
+                )),
+                ..Default::default()
+            };
+
+            let _pod = match Api::<V1Pod>::namespaced(self.client().await?, app_name)
+                .list(&p)
+                .await?
+                .into_iter()
+                .next()
+            {
+                Some(pod) => {
+                    let p = LogParams {
+                        timestamps: true,
+                        tail_lines: Some(limit.try_into().unwrap()),
+                        ..Default::default()
+                    };
+
+                    let logs = Api::<V1Pod>::namespaced(self.client().await?, app_name)
+                        .logs(&pod.metadata.name.as_ref().unwrap(), &p)
+                        .await?;
+                    let mut current_time = Utc::now();
+                    let logs = logs
+                        .split('\n')
+                        .enumerate()
+                        // Unfortunately,  API does not support head (also like docker, cf. https://github.com/moby/moby/issues/13096)
+                        // Until then we have to skip these log messages which is super slow…
+                        .filter(move |(index, _)| index < &limit)
+                        .filter(|(_, line)| !line.is_empty())
+                        .map(|(_, line)| {
+                            let mut iter = line.splitn(2, ' ');
+                            let timestamp = iter.next().expect(
+                "This should never happen: kubernetes should return timestamps, separated by space",
+            );
+
+                            let datetime = DateTime::parse_from_rfc3339(timestamp)
+                                .expect("Expecting a valid timestamp");
+                            if datetime.with_timezone(&Utc) > current_time {
+                                current_time = datetime.with_timezone(&Utc);
+                            }
+
+                            let mut log_line: String = iter.collect::<Vec<&str>>().join(" ");
+                            log_line.push('\n');
+                            log_line
+                        })
+                        .collect::<String>();
+
+                    yield Ok(LogEvents::Message(logs));
+
+                    let p =LogParams {
+                        since_time:Some(current_time),
+                        follow: true,
+                        ..Default::default()
+                    };
+
+                    let mut logs = Api::<V1Pod>::namespaced(self.client().await?, app_name)
+                        .log_stream(&pod.metadata.name.unwrap(), &p)
+                        .await?.lines();
+
+                        while let Some(line) = logs.try_next().await? {
+                            yield Ok(LogEvents::Line(line));
+                        }
+
+                }
+                None => {}
+            };
         })
     }
 
@@ -726,7 +870,9 @@ impl Infrastructure for KubernetesInfrastructure {
     }
 
     async fn base_traefik_ingress_route(&self) -> Result<Option<TraefikIngressRoute>, Error> {
-        let Runtime::Kubernetes(k8s_config) = self.config.runtime_config() else { return Ok(None); };
+        let Runtime::Kubernetes(k8s_config) = self.config.runtime_config() else {
+            return Ok(None);
+        };
 
         let labels_path = k8s_config.downward_api().labels_path();
         let labels = match tokio::fs::read_to_string(labels_path).await {
@@ -759,7 +905,9 @@ impl Infrastructure for KubernetesInfrastructure {
 
         let Some(service) = services.into_iter().find(|s| {
             let Some(spec) = &s.spec else { return false };
-            let Some(selector) = &spec.selector else { return false };
+            let Some(selector) = &spec.selector else {
+                return false;
+            };
 
             if selector.is_empty() {
                 return false;
@@ -774,7 +922,9 @@ impl Infrastructure for KubernetesInfrastructure {
             }
 
             true
-        }) else { return Ok(None); };
+        }) else {
+            return Ok(None);
+        };
 
         let routes = Api::<IngressRoute>::namespaced(client, &service.metadata.namespace.unwrap())
             .list(&Default::default())

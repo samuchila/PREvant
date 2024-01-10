@@ -26,11 +26,16 @@
 <template>
    <dlg ref="dialog" :title="`Logs of ${$route.params.service} in ${$route.params.app}`" :large="true" @close="clearLogs">
       <template v-slot:body>
-         <DynamicScroller ref="scroller" :items="logLines" :min-item-size="24" class="ra-logs" :emit-update="true"
-            @resize="scrollBottom" @scroll-end="handleEndScroll">
+        <div class="d-flex justify-content-end">
+          <button type="button" class="btn btn-success" @click="processDownload"><font-awesome-icon
+               icon="download" /> &nbsp;
+            Download Logs</button>
+        </div>
+         <DynamicScroller ref="scroller" :items="logLines" :min-item-size="54" :item-size="20" class="ra-logs"
+            :emit-update="true" :buffer="600">
             <template v-slot="{ item, index, active }">
-               <DynamicScrollerItem :item="item" :active="index === item.id" :size-dependencies="[item.line,]"
-                  :data-index="item.id" :data-active="active">
+               <DynamicScrollerItem :item="item" :active="active" :size-dependencies="[item.line,]"
+                  :data-index="index" :data-active="active">
                   <div class="ra-log-line" :key="item.id">
                      {{ item.line }}
                   </div>
@@ -44,21 +49,24 @@
 <style>
 @import 'vue-virtual-scroller/dist/vue-virtual-scroller.css';
 
-.ra-logs {
-   height: 80vh;
-   overflow-y: auto;
-   background-color: black;
-   color: white;
-   font-family: var(--font-family-monospace);
-   padding: 0.5rem;
-}
+   .ra-logs {
+      height: 80vh;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      background-color: black;
+      color: white;
+      font-family: var(--font-family-monospace);
 
-.ra-log-line {
-   margin-bottom: 5px;
-   padding: 5px;
-   white-space: nowrap;
-   word-wrap: break-word;
-}
+      padding: 0.5rem;
+   }
+
+   .ra-log-line {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      height: 20px;
+   }
 </style>
 
 <script>
@@ -69,173 +77,183 @@ import Dialog from './Dialog.vue';
 let requestUri;
 
 export default {
-   data() {
-      return {
-         logLines: [],
-         nextPageLink: null,
-         since: '',
-         limit: 2000,
-         eventSource: null,
-         scrollPosition: 0,
+  data() {
+    return {
+      logLines: [],
+      nextPageLink: null,
+      since: '',
+      limit: 2000,
+      eventSource: null,
+      scrollPosition: false,
+      minItemSize: 24,
+    };
+  },
+  components: {
+    dlg: Dialog,
+    DynamicScrollerItem: DynamicScrollerItem,
+    DynamicScroller: DynamicScroller,
+  },
+  watch: {
+    scrollPosition(scrollTopReached) {
+      if (scrollTopReached === true) {
+        this.limit = this.logLines.length + 2000;
+        this.$nextTick(() => {
+          this.eventSource.close();
+          this.fetchLogs(this.currentPageLink, true);
+        });
+      }
+    },
+  },
+  computed: {
+    currentPageLink() {
+      return `/api/apps/${this.$route.params.app}/logs/${this.$route.params.service}?limit=${this.limit}`;
+    },
+    downloadLink() {
+      return `/api/apps/${this.$route.params.app}/logs/${this.$route.params.service}`;
+    },
+  },
+  mounted() {
+    this.fetchLogs(this.currentPageLink);
+    this.$refs.scroller.$el.addEventListener('scroll', this.handleScroll);
+  },
+  beforeDestroy() {
+    if (this.eventSource) {
+      this.eventSource.close();
+    }
+    this.$refs.scroller.$el.removeEventListener('scroll');
+  },
+  methods: {
+    fetchLogs(newRequestUri, reload = false) {
+      if (newRequestUri == null) {
+        return;
+      }
 
+      requestUri = newRequestUri;
+      this.eventSource = new EventSource(requestUri);
+      this.eventSource.onopen = () => {
+        this.$refs.dialog.open();
       };
-   },
-   components: {
-      'dlg': Dialog,
-      'DynamicScrollerItem': DynamicScrollerItem,
-      'DynamicScroller': DynamicScroller
-   },
-   watch: {
-      currentPageLink(newCurrentPageLink) {
-         this.logLines = [];
-         this.fetchLogs(newCurrentPageLink);
-      }
-   },
-   computed: {
-      currentPageLink() {
-         return `/api/apps/${this.$route.params.app}/logs/${this.$route.params.service}`;
-      },
-      filteredPageLink() {
-         let queryString = '';
-         queryString += this.since ? `since=${this.since}:00-00:00` : '';
-         if (this.limit > 0) {
-            queryString += queryString.length > 0 ? '&' : '';
-            queryString += `limit=${this.limit}`;
-         }
 
-         return this.currentPageLink + (queryString ? `?${queryString}` : '');
-      }
-   },
-   mounted() {
-      this.fetchLogs(this.currentPageLink);
-
-   },
-   beforeDestroy() {
-      if (this.eventSource) {
-         this.eventSource.close();
-      }
-   },
-   methods: {
-      fetchLogs(newRequestUri) {
-         if (newRequestUri == null || requestUri != null) {
-            return;
-         }
-
-         requestUri = newRequestUri;
-         this.eventSource = new EventSource(requestUri);
-         this.eventSource.onopen = () => {
-            this.$refs.dialog.open();
-            console.log("Connection to server opened.");
-         };
-
-
-         this.eventSource.addEventListener("message", (e) => {
-            const linesSplit = e.data.split('\n');
-            this.logLines = this.logLines.concat(
-               linesSplit
-                  .filter((line, index) => index < linesSplit.length - 1)
-                  .map((line, index) => ({ id: linesSplit.length - index, line }))
-            );
-         });
-         this.eventSource.addEventListener("line", (e) => {
-            this.logLines.push({ id: this.logLines.length + 1, line: e.data });
-
-            if (this.isCloseToBottom()) {
-               this.$nextTick(() => {
-                  this.scrollBottom();
-               });
-            }
-         });
-
-         this.eventSource.onerror = function () {
-            console.log("EventSource failed.");
-         };
-
-
-      },
-
-      isCloseToBottom() {
-         const el = this.$refs.scroller.$el;
-         const distanceFromBottom = el.scrollHeight - (el.scrollTop + el.clientHeight);
-         const minItemSize = 24;
-         return distanceFromBottom < minItemSize;
-      },
-
-      clearLogs() {
-         this.currentPageLink = null;
-         this.nextPageLink = null;
-         this.logLines = [];
-
-         this.$router.push('/');
-      },
-
-      scrollBottom() {
-         this.$refs.scroller.scrollToBottom();
-      },
-
-      sendRequest() {
-         console.log('Sending request with:', this.since, this.limit);
-         this.fetchLogs(this.filteredPageLink);
-      },
-
-      handleEndScroll() {
-         console.log("Scroller at the bottom");
-      },
-
-      processDownload() {
-
-         fetch(this.filteredPageLink)
-            .then(parseLogsResponse)
-            .then(({ logLines, rel }) => {
-               const blob = new Blob([logLines], { type: 'text/plain' });
-               const url = window.URL.createObjectURL(blob);
-
-               const filename = `${this.$route.params.app}_${this.$route.params.service}_${new Date().toISOString()}.txt`;
-               const link = document.createElement('a');
-               link.href = url;
-               link.download = filename;
-               document.body.appendChild(link);
-               link.click();
-
-               document.body.removeChild(link);
-               window.URL.revokeObjectURL(url);
-            }
-            )
-            .catch(() => {
-               console.error('Unable to fetch logs for download')
+      this.eventSource.addEventListener('message', (e) => {
+        const lines = e.data;
+        const linesSplit = lines.split('\n');
+        this.logLines = [];
+        this.$nextTick(() => {
+          this.logLines = this.logLines.concat(
+            linesSplit
+              .filter((line, index) => index < linesSplit.length - 1)
+              .map((line, index) => ({ id: index, line }))
+          );
+          if (!reload) {
+            this.scrollBottom();
+          } else {
+            this.$nextTick(() => {
+              this.scrollToItem(2000);
             });
+          }
+          this.limit = this.logLines.length;
+        });
+      });
 
-      },
+      this.eventSource.addEventListener('line', (e) => {
+        const nextId = this.logLines.length > 0 ? this.logLines[this.logLines.length - 1].id + 1 : 1;
+        this.logLines.push({ id: nextId, line: e.data });
 
-      updateLogs() {
-         if (this.nextPageLink) {
-            const nextPageLink = this.nextPageLink;
-            this.nextPageLink = null;
-            this.currentPageLink = nextPageLink;
-         }
-      },
-      sendToBottom() {
-         this.scrollBottom();
+        if (this.isCloseToBottom()) {
+          this.$nextTick(() => {
+            this.scrollBottom();
+          });
+        }
+      });
+
+      this.eventSource.onerror = function () {
+        console.log('EventSource failed.');
+      };
+    },
+
+    isCloseToBottom() {
+      const el = this.$refs.scroller.$el;
+      const distanceFromBottom =
+        el.scrollHeight - (el.scrollTop + el.clientHeight);
+      return distanceFromBottom < this.minItemSize;
+    },
+
+    clearLogs() {
+      this.currentPageLink = null;
+      this.nextPageLink = null;
+      this.logLines = [];
+      if (this.eventSource) {
+        this.eventSource.close();
       }
 
-   }
-}
+      this.$router.push('/');
+    },
+
+    scrollBottom() {
+      this.$refs.scroller.scrollToBottom();
+    },
+    scrollToItem(index) {
+      this.$refs.scroller.scrollToItem(index);
+    },
+
+    processDownload() {
+      fetch(this.downloadLink, {
+        method: 'GET',
+        headers: {
+          Accept: 'text/plain',
+        },
+      })
+        .then(parseLogsResponse)
+        .then(({ logLines, rel }) => {
+          const blob = new Blob([logLines], { type: 'text/plain' });
+          const url = window.URL.createObjectURL(blob);
+
+          const filename = `${this.$route.params.app}_${
+            this.$route.params.service
+          }_${new Date().toISOString()}.txt`;
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = filename;
+          document.body.appendChild(link);
+          link.click();
+
+          document.body.removeChild(link);
+          window.URL.revokeObjectURL(url);
+        })
+        .catch(() => {
+          console.error('Unable to fetch logs for download');
+        });
+    },
+    sendToBottom() {
+      this.scrollBottom();
+    },
+    handleScroll() {
+      const el = this.$refs.scroller.$el;
+      this.limit = this.logLines.length;
+      if (el.scrollTop === 0 && this.limit > 2000) {
+        this.scrollPosition = true;
+      } else {
+        this.scrollPosition = false;
+      }
+    },
+  },
+};
 
 function parseLogsResponse(response) {
-   return new Promise((resolve, reject) => {
-      if (!response.ok) {
-         return reject(response);
-      }
+  return new Promise((resolve, reject) => {
+    if (!response.ok) {
+      return reject(response);
+    }
 
-      const link = response.headers.get('Link');
-      let rel = null;
-      if (link != null) {
-         const linkHeader = parseLinkHeader(link);
-         if (linkHeader.next != null) {
-            rel = linkHeader.next.url;
-         }
+    const link = response.headers.get('Link');
+    let rel = null;
+    if (link != null) {
+      const linkHeader = parseLinkHeader(link);
+      if (linkHeader.next != null) {
+        rel = linkHeader.next.url;
       }
-      return resolve(response.text().then(text => ({ logLines: text, rel })));
-   });
+    }
+    return resolve(response.text().then((text) => ({ logLines: text, rel })));
+  });
 }
 </script>

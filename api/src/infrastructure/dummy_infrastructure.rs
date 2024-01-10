@@ -179,30 +179,44 @@ impl Infrastructure for DummyInfrastructure {
         }
     }
 
-    fn get_logs<'a>(
+    async fn get_logs(
+        &self,
+        app_name: &String,
+        service_name: &String,
+        _from: &Option<DateTime<FixedOffset>>,
+        _limit: usize,
+    ) -> Result<Option<Vec<(DateTime<FixedOffset>, String)>>, failure::Error> {
+        Ok(Some(vec![
+            (
+                DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z").unwrap(),
+                format!("Log msg 1 of {} of app {}\n", service_name, app_name),
+            ),
+            (
+                DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z").unwrap(),
+                format!("Log msg 2 of {} of app {}\n", service_name, app_name),
+            ),
+            (
+                DateTime::parse_from_rfc3339("2019-07-18T07:35:00.000000000Z").unwrap(),
+                format!("Log msg 3 of {} of app {}\n", service_name, app_name),
+            ),
+        ]))
+    }
+
+    fn stream_logs<'a>(
         &'a self,
         app_name: &'a String,
         service_name: &'a String,
-        _from: &'a Option<DateTime<FixedOffset>>,
         _limit: usize,
     ) -> Pin<Box<dyn Stream<Item = Result<LogEvents, failure::Error>> + Send + 'a>> {
         Box::pin(stream! {
-            let logs = vec![
-                                (
-                                    DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z").unwrap(),
-                                    format!("Log msg 1 of {} of app {}\n", service_name, app_name),
-                                ),
-                                (
-                                    DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z").unwrap(),
-                                    format!("Log msg 2 of {} of app {}\n", service_name, app_name),
-                                ),
-                                (
-                                    DateTime::parse_from_rfc3339("2019-07-18T07:35:00.000000000Z").unwrap(),
-                                    format!("Log msg 3 of {} of app {}\n", service_name, app_name),
-                                ),
-                            ];
-                            let chunk = LogChunk::from(logs);
-                            yield Ok(LogEvents::Message(chunk));
+            let logs = vec![format!("Log msg 1 of {} of app {}\n", service_name, app_name),
+                    format!("Log msg 2 of {} of app {}\n", service_name, app_name),
+                    format!("Log msg 3 of {} of app {}\n", service_name, app_name),
+            ];
+
+            for log in logs {
+                yield Ok(LogEvents::Line(log));
+            }
 
         })
     }

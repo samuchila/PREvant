@@ -36,16 +36,14 @@ use crate::models::service::{ContainerType, Service, ServiceStatus};
 use crate::models::{AppName, AppStatusChangeId, LogChunk, ServiceConfig};
 use crate::registry::ImagesServiceError;
 use chrono::{DateTime, FixedOffset};
-use futures::Stream;
+use futures::stream::BoxStream;
 use handlebars::TemplateRenderError;
 pub use host_meta_cache::new as host_meta_crawling;
 pub use host_meta_cache::HostMetaCache;
-pub use host_meta_cache::HostMetaCrawler;
 use multimap::MultiMap;
 pub use routes::{apps_routes, delete_app_sync};
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
-use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -342,15 +340,32 @@ impl AppsService {
         }
     }
 
-    pub async fn get_logs<'a>(
+    pub async fn get_logs(
+        &self,
+        app_name: &AppName,
+        service_name: &String,
+        since: &Option<DateTime<FixedOffset>>,
+        limit: usize,
+    ) -> Result<Option<LogChunk>, AppsServiceError> {
+        match self
+            .infrastructure
+            .get_logs(app_name, service_name, since, limit)
+            .await?
+        {
+            None => Ok(None),
+            Some(ref logs) if logs.is_empty() => Ok(None),
+            Some(logs) => Ok(Some(LogChunk::from(logs))),
+        }
+    }
+
+    pub async fn stream_logs<'a>(
         &'a self,
         app_name: &'a AppName,
         service_name: &'a String,
-        since: &'a Option<DateTime<FixedOffset>>,
         limit: usize,
-    ) -> Pin<Box<dyn Stream<Item = Result<LogEvents, failure::Error>> + Send + 'a>> {
+    ) -> BoxStream<'a, Result<LogEvents, failure::Error>> {
         self.infrastructure
-            .get_logs(app_name, service_name, since, limit)
+            .stream_logs(app_name, service_name, limit)
     }
 
     pub async fn change_status(

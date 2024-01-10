@@ -54,9 +54,10 @@ static STORAGE_TYPE_LABEL: &str = "com.aixigo.preview.servant.storage-type";
 /// will be cloned from a running service.
 
 pub enum LogEvents {
-    Message(LogChunk),
+    Message(String),
     Line(String),
 }
+
 fn replicated_environment_variable_to_json(env: &Environment) -> Option<Value> {
     let replicated_env = env
         .iter()

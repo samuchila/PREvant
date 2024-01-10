@@ -26,6 +26,7 @@
 use chrono::{DateTime, FixedOffset, Utc};
 use std::convert::From;
 
+#[derive(Serialize)]
 pub struct LogChunk {
     since: DateTime<FixedOffset>,
     until: DateTime<FixedOffset>,

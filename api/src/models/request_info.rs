@@ -51,7 +51,7 @@ impl<'r> FromRequest<'r> for RequestInfo {
             None => match request.headers().get_one("host") {
                 Some(host) => host.to_string(),
                 None => {
-                    return Outcome::Failure((Status::BadRequest, ()));
+                    return Outcome::Error((Status::BadRequest, ()));
                 }
             },
         };
@@ -70,7 +70,7 @@ impl<'r> FromRequest<'r> for RequestInfo {
         let host_url = format!("{}://{}{}", forwarded_proto, forwarded_host, forwarded_port);
         match Url::parse(&host_url) {
             Ok(url) => Outcome::Success(RequestInfo { base_url: url }),
-            Err(_) => Outcome::Failure((Status::BadRequest, ())),
+            Err(_) => Outcome::Error((Status::BadRequest, ())),
         }
     }
 }
